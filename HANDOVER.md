@@ -1,9 +1,9 @@
-# Handover Stagiaire — Domu/Wired
+# Handover Claude — Domu/Wired
 
 > Reprise le 8 juillet 2026 après reset tokens.
 > Contexte complet dans `github.com/mrpandafr/domu` (privé, branche `main`).
 
-## État des lieux
+## Ce que tu as déjà livré
 
 Tu as livré `vectormind 0.3.0` avec le paquet `domu/` complet :
 - `domu/provider.py` (518 lignes) — DomuProvider, 13 hooks MemoryProvider
