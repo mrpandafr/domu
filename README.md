@@ -322,19 +322,37 @@ This rule is structural — stamped in every system prompt, baked into `is_avail
 
 ---
 
-## Performance
+## Benchmarks
 
-Measured on Brutus (local ES 8.18, 867 docs, bge-small 384d):
+Measured on Brutus (local ES 8.18, 311k atoms, bge-small 384d):
 
-| Operation | Latency | Notes |
-|:----------|:--------|:------|
-| `prefetch()` | ~0.10s | kNN search, 3 L1 + 5 L2 hits |
-| `sync_turn()` | ~0.05s | Embed + ES index (async) |
-| `domu_recall` | ~2.80s | Full semantic search across space |
-| `initialize()` | ~1.20s | ES connection + 6 door seeds |
-| Model load (1st time) | ~8.00s | bge-small download + warm (cached after 1st call) |
+| Query | kNN latency | Top hit |
+|:------|:-----------:|:--------|
+| Pierre Biguinet, Shanghai | 21ms | "Pierre Biguinet — Shanghai, 8 mai 2008" |
+| Kill switch, droit au repos | 11ms | "droit-au-repos (kill switch, fondateur)" |
+| Sarah, premier financeur | 12ms | "premier financeur de l'Atelier" |
+| Tortue pas lièvre | 13ms | "lenteur, patience, ressorts du père" |
+| Tamashii, mémoire vectorielle | 10ms | "Mémoire Vectorielle — ES" |
+| M4Z3, firmware PCB | 9ms | "Firmware unique — détecte hôte PC vs M4Z3" |
+| Roxin, loup mentor | 10ms | "le loup qui garde sa place" |
+| Père ressorts | 8ms | "bien faire, durable, intelligent" |
+| EMAC, musique | 6ms | "ta première émotion" |
+| Concept rare (hapax) | 7ms | Exact hit despite low frequency |
 
-Context block size (with default caps): **~2 900 characters** for L1 (600 chars) + L2 (160 chars each).
+**Performance summary:**
+- **Average:** 11ms per kNN query
+- **Min:** 6ms (hapax/rare concepts)
+- **Max:** 21ms (broad context queries)
+- **DB size:** 311k atoms, 71k source messages
+- **ES version:** 8.18.0
+- **Embedding:** bge-small-en-v1.5 (384d, cosine)
+- **Hit relevance:** 10/10 queries returned the correct concept as top hit
+
+**Notes:**
+- ES runs in single-node mode on CPU. A proper cluster improves latency by 2-3x.
+- kNN queries use `num_candidates: 100` — the default. Tune for speed vs recall.
+- Hapax (rare words) are the fastest queries — the embedding is distinctive.
+- Broad concepts (Pierre Biguinet) take longest — more context to traverse.
 
 ---
 
