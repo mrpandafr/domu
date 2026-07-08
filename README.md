@@ -391,3 +391,10 @@ MIT — K1SS Atelier 0, Besançon, France.
 ---
 
 **One space. Three circles. Five verbs. Zero bullshit.** 🐢
+
+---
+## License
+
+MIT — ©  
+
+See [LICENSE](LICENSE) for the full text.

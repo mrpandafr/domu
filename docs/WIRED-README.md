@@ -201,3 +201,10 @@ MIT — K1SS Atelier 0, Besançon.
 *Architecture by K1SS Atelier 0, July 2026.*
 *The simplest possible distributed memory: Domu nodes wired by ES.*
 *Inspired by a father who designed springs — do it well, do it durably, do it intelligently.* 🐢
+
+---
+## License
+
+MIT — ©  
+
+See [LICENSE](LICENSE) for the full text.
