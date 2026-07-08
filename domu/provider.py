@@ -212,7 +212,9 @@ class DomuProvider(MemoryProvider):
 
     def _run(self, coro: Any, *, timeout: float | None = None) -> Any:
         """Submit to the domu loop and wait (bounded)."""
-        assert self._loop is not None, "domu is not initialized"
+        if self._loop is None:
+            raise RuntimeError("domu is not initialized")
+
         return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout)
 
     def _submit(self, coro: Any) -> None:
@@ -232,14 +234,12 @@ class DomuProvider(MemoryProvider):
     # ------------------------------------------------------------------
 
     def system_prompt_block(self) -> str:
-        doors = ", ".join(self.mind.categories.names) if (
-            self.mind and self.mind.categories) else "—"
         return (
-            "You have access to Domu, a vector memory over one shared "
-            f"space with three concentric readings: L1 the current focus, "
-            f"L2 the vault, L3 the doors ({doors}). A <memory-context> "
-            "block precedes turns; tools domu_recall / domu_remember / "
-            f"domu_forget give explicit access. {_ABSOLUTE_RULE}"
+            "Domu — vector memory active. A memory context block precedes each turn "
+            "(L1 focus / L2 vault / L3 doors). Trust it. "
+            "Use domu_recall only if the user asks for an explicit search "
+            "or the prefetch is clearly insufficient. "
+            f"{_ABSOLUTE_RULE}"
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
