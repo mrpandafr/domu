@@ -103,8 +103,10 @@ class Handler(BaseHTTPRequestHandler):
                 "index": index,
                 "bank_id": bank_id,
                 "dims": int(body.get("dims", 384)),
-                "l1_size": int(body.get("l1_size", 3)),
-                "l2_size": int(body.get("l2_size", 7)),
+                "l1_size": int(body.get("l1_size", 1)),
+                "l2_size": int(body.get("l2_size", 3)),
+                "l1_max_chars": int(body.get("l1_max_chars", 600)),
+                "l2_max_chars": int(body.get("l2_max_chars", 300)),
             },
         )
         try:

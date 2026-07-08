@@ -608,9 +608,19 @@ class DomuProvider(MemoryProvider):
                 query, focus=self.focus, k=self.l1_size + self.l2_size)
         if not len(recall):
             return "(no memory matches this focus — say so rather than invent)"
-        l1 = (recall.l1 or recall.hits)[:self.l1_size]
+        def _dedup(hits):
+            seen, out = set(), []
+            for h in hits:
+                key = h.text[:100]
+                if key not in seen:
+                    seen.add(key)
+                    out.append(h)
+            return out
+
+        all_hits = _dedup(recall.l1 or recall.hits)
+        l1 = all_hits[:self.l1_size]
         l1_ids = {h.id for h in l1}
-        l2 = [h for h in recall.hits if h.id not in l1_ids][:self.l2_size]
+        l2 = [h for h in _dedup(recall.hits) if h.id not in l1_ids][:self.l2_size]
         doors = sorted({h.category for h in recall.hits if h.category})
         lines = ["L1 — FOCUS"]
         lines += [f"  • {h.text[:self.l1_max_chars]}" for h in l1]
