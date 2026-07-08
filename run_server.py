@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lance le serveur Domu. Lancer depuis n'importe où."""
+"""Start the Domu memory server. Works from any directory."""
 import sys
 from pathlib import Path
 

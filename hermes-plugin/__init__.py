@@ -1,13 +1,13 @@
-"""Domu Hermes plugin — client HTTP thin.
+"""Domu Hermes plugin — thin HTTP client.
 
-Délègue toutes les méthodes ABC au serveur Domu (domu/server.py).
-Zéro dep lourde : stdlib urllib uniquement.
+Delegates every ABC method to the Domu server (domu/server.py).
+Zero heavy deps: stdlib urllib only.
 
-Lancer le serveur d'abord : python -m domu.server
-Config : DOMU_SERVER_URL (défaut http://127.0.0.1:7430)
-         ou server_url dans ~/.hermes/domu/config.json
+Start the server first: python run_server.py
+Config: DOMU_SERVER_URL env var (default http://127.0.0.1:7430)
+        or server_url in ~/.hermes/domu/config.json
 
-Symlink : ~/.hermes/plugins/domu → ~/K1SS/domu/hermes-plugin/
+Install: ln -s /path/to/domu/hermes-plugin ~/.hermes/plugins/domu
 """
 from __future__ import annotations
 
@@ -112,13 +112,13 @@ class DomuClient(MemoryProvider):
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [
             {"name": "domu_recall",
-             "description": "Cherche dans la mémoire. Retourne L1/L2/L3.",
+             "description": "Search memory. Returns L1/L2/L3 concentric context.",
              "parameters": {"type": "object",
                             "properties": {"query": {"type": "string"},
                                            "k": {"type": "integer", "default": 8}},
                             "required": ["query"]}},
             {"name": "domu_remember",
-             "description": "Stocke une note en mémoire.",
+             "description": "Store a note in memory (goes through Synapse's gates).",
              "parameters": {"type": "object",
                             "properties": {
                                 "text": {"type": "string"},
@@ -128,7 +128,7 @@ class DomuClient(MemoryProvider):
                             },
                             "required": ["text"]}},
             {"name": "domu_forget",
-             "description": "Supprime des notes par id.",
+             "description": "Delete notes by id.",
              "parameters": {"type": "object",
                             "properties": {"ids": {"type": "array",
                                                    "items": {"type": "string"}}},
@@ -139,11 +139,12 @@ class DomuClient(MemoryProvider):
 
     def system_prompt_block(self) -> str:
         return (
-            "Domu — mémoire vectorielle active. Un bloc de contexte mémoire "
-            "est injecté avant chaque tour (L1 focus / L2 vault / L3 portes). "
-            "Fais-lui confiance. N'utilise domu_recall que si l'utilisateur "
-            "demande une recherche explicite ou si le prefetch est clairement "
-            "insuffisant. Règle absolue : jamais broder la réalité."
+            "Domu — vector memory active. A memory context block precedes each turn "
+            "(L1 focus / L2 vault / L3 doors). Trust it. "
+            "Use domu_recall only if the user asks for an explicit search "
+            "or the prefetch is clearly insufficient. "
+            "Absolute rule: never embroider reality. "
+            "If memory returns nothing, say so."
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
@@ -153,7 +154,7 @@ class DomuClient(MemoryProvider):
                           timeout=3.0).get("context", "")
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        pass  # le serveur gère sa propre chaleur
+        pass  # server handles its own warmth
 
     def sync_turn(self, user_content: str, assistant_content: str, *,
                   session_id: str = "", messages: Optional[List] = None) -> None:

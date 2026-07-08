@@ -1,8 +1,19 @@
 """Domu memory server.
 
-Expose DomuProvider via HTTP. Le plugin Hermes appelle ce serveur.
+Wraps DomuProvider in a minimal HTTP server. The Hermes plugin calls this.
 
-Lancement : python -m domu.server [--port 7430] [--host 127.0.0.1]
+Start: python run_server.py [--port 7430] [--host 127.0.0.1]
+
+Routes
+------
+GET  /health         liveness + session status
+POST /session/init   start a session (connects ES, loads the model)
+POST /session/end    flush pending writes, run end-of-session hooks
+POST /prefetch       L1/L2/L3 context block for a query
+POST /sync_turn      index a completed turn
+POST /recall         explicit memory search  (domu_recall tool)
+POST /remember       store a note            (domu_remember tool)
+POST /forget         delete notes by id      (domu_forget tool)
 """
 from __future__ import annotations
 
@@ -160,7 +171,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description="Domu memory server")
     ap.add_argument("--port", type=int, default=7430)
     ap.add_argument("--host", default="127.0.0.1")
     args = ap.parse_args()
