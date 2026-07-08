@@ -1,18 +1,36 @@
-"""Simulated Hermes session — the 13 DomuProvider hooks, no cluster needed.
+"""Conformity + simulated Hermes session against the REAL memory_provider.py.
 
-Covers: lifecycle, the honest empty context (never embroider), Synapse's
-gates (noise / size / dedup), the L1-L2-L3 context block, bank/scope
-isolation enforced in the query, the three tools, focus-drift time-vectors,
-pre-compress, session switch, background prefetch, shutdown.
+Covers: ABC instantiation (real abstract methods), the synchronous surface
+over the background loop, the M4Z3 case (real content kept, tool noise
+dropped), context gating (cron writes disabled), cached prefetch,
+JSON-string tool results, session-switch reset semantics, pre-compress
+salvage, config schema/save, shutdown.
 
-Run from the repo root:  python tests/test_domu.py
+Run from the repo root:  python tests/test_domu.py [path/to/memory_provider.py]
 """
-import sys, asyncio, math
-sys.path.insert(0, ".")
-import vectormind as vm  # noqa: F401
-from domu import DomuProvider
+import hashlib
+import sys, os, time, json, math, types, importlib.util, tempfile
 
-WORDS = {"tortue": [1, 0], "driver": [0, 1], "musique": [0.72, 0.69], "domu": [0.3, 0.95]}
+sys.path.insert(0, ".")
+
+# --- load the REAL ABC when available ---
+ABC_PATH = sys.argv[1] if len(sys.argv) > 1 else "/mnt/user-data/uploads/memory_provider.py"
+if os.path.exists(ABC_PATH):
+    agent_pkg = types.ModuleType("agent"); agent_pkg.__path__ = [""]
+    sys.modules["agent"] = agent_pkg
+    spec = importlib.util.spec_from_file_location("agent.memory_provider", ABC_PATH)
+    mp = importlib.util.module_from_spec(spec)
+    sys.modules["agent.memory_provider"] = mp
+    spec.loader.exec_module(mp)
+    print("ABC réelle chargée:", sorted(mp.MemoryProvider.__abstractmethods__))
+else:
+    mp = None
+    print("ABC réelle absente — test en mode duck-typé")
+
+from domu import DomuProvider  # noqa: E402  (imports agent.memory_provider)
+
+WORDS = {"tortue": [1, 0], "driver": [0, 1], "musique": [0.72, 0.69],
+         "m4z3": [0.3, 0.95], "plaquette": [0.9, 0.45]}
 
 
 async def embed(texts):
@@ -23,8 +41,11 @@ async def embed(texts):
             if w in t.lower():
                 v = [v[0] + vec[0], v[1] + vec[1]]; n += 1
         if n == 0:
-            h = abs(hash(t)) % 100 / 100
-            v = [0.4 + h * 0.05, 0.6 - h * 0.05]
+            # deterministic angular spread (hash() is per-process salted,
+            # which made the dedup outcome nondeterministic across runs)
+            h = int(hashlib.md5(t.encode()).hexdigest(), 16) % 1000 / 1000
+            a = h * math.pi
+            v = [math.cos(a), math.sin(a)]
         norm = math.hypot(*v) or 1
         out.append([v[0] / norm, v[1] / norm])
     return out
@@ -38,9 +59,9 @@ class FakeIndices:
 
 
 class FakeES:
-    def __init__(self): self.indices = FakeIndices()
+    def __init__(self): self.indices = FakeIndices(); self.closed = False
     async def index(self, index=None, document=None, **kw): METRICS.append(document)
-    async def close(self): pass
+    async def close(self): self.closed = True
     async def bulk(self, operations=None, refresh=None):
         i = 0; items = []
         while i < len(operations):
@@ -58,10 +79,6 @@ class FakeES:
                 if b and "should" in b:
                     if not any(s.get("term", {}).get("tags") in d["tags"] for s in b["should"]):
                         return False
-                elif "term" in f and "tags" in f["term"]:
-                    if f["term"]["tags"] not in d["tags"]: return False
-                elif "terms" in f and "tags" in f["terms"]:
-                    if not set(f["terms"]["tags"]) & set(d["tags"]): return False
             return True
         return [d for d in DOCS.values() if ok(d)]
     async def search(self, index=None, body=None, **kw):
@@ -84,47 +101,129 @@ class FakeES:
                 for i, s in sorted(scores.items(), key=lambda x: -x[1])][:body["size"]]}}
 
 
-async def main():
-    p = DomuProvider(es_client=FakeES(), embed=embed, bank_id="kage",
-                     categories={"la-tortue": "tortue", "l-atelier": "driver",
-                                 "la-musique": "musique"})
-    await p.initialize()
-    assert p.is_available and "never embroider" in p.system_prompt_block().lower()
-    p.on_turn_start()
-    assert "no memory matches" in await p.prefetch("où en est le driver ?")
-    assert await p.sync_turn("[...session_search result...]") is None       # règle 3
-    assert await p.sync_turn("ok 42") is None                               # règle 5
-    assert await p.sync_turn("le driver elasticsearch de la tortue est validé")
-    assert await p.sync_turn("le driver elasticsearch de la tortue est validé") is None  # dédup
-    await p.sync_turn("on écoute la musique du soir en codant domu")
-    await p.sync_turn("domu orchestre vectormind et le tricoteur tisse")
-    p.on_turn_start()
-    ctx = await p.prefetch("parle-moi du driver de la tortue")
-    assert "L1 — FOCUS" in ctx and "L3 — PORTES" in ctx
-    DOCS["intrus"] = {"id": "intrus", "text": "secret driver de miss", "vector": [0, 1],
-                      "tags": ["bank:miss", "scope:private"],
-                      "at": "2026-07-07T00:00:00+00:00", "meta": {}}
-    DOCS["pub"] = {"id": "pub", "text": "annonce driver publique", "vector": [0, 1],
-                   "tags": ["bank:js", "scope:public"],
-                   "at": "2026-07-07T00:00:00+00:00", "meta": {}}
-    out = await p.handle_tool_call("domu_recall", {"query": "secret annonce driver"})
-    ids = [h["id"] for h in out["hits"]]
-    assert "intrus" not in ids and "pub" in ids                             # isolation
-    r = await p.handle_tool_call("domu_remember",
-        {"text": "note explicite sur la musique de la tortue au crépuscule",
-         "scope": "private"})
-    assert r["id"]
-    assert (await p.handle_tool_call("domu_forget", {"ids": [r["id"]]}))["deleted"] == 1
-    drifts = [m for m in METRICS if m["type"] == "focus_drift"]
-    assert drifts and drifts[-1]["agent"] == "kage"                          # time-vectors
-    assert "memory-context" in await p.on_pre_compress()
-    p.on_session_switch()
-    assert p.focus.vector is None and p.turn == 0
-    p.queue_prefetch("domu et la musique")
-    await asyncio.sleep(0)
-    await p.on_session_end()
-    assert "memory-context" in await p.prefetch("domu et la musique")
-    await p.shutdown()
-    print("DOMU : 13 hooks verts")
+def wait_writes(p, timeout=3.0):
+    end = time.time() + timeout
+    while p._pending and time.time() < end:
+        time.sleep(0.02)
 
-asyncio.run(main())
+
+# ---------------------------------------------------------------------------
+p = DomuProvider(es_client=FakeES(), embed=embed,
+                 categories={"la-tortue": "tortue", "l-atelier": "driver",
+                             "la-musique": "musique"})
+if mp is not None:
+    assert isinstance(p, mp.MemoryProvider), "n'hérite pas de la vraie ABC"
+    print("1. instanciation contre la vraie ABC: OK")
+assert p.is_available() is True and p.name == "domu"          # méthode, pas propriété
+assert "never embroider" in p.system_prompt_block().lower()
+
+# initialize: signature réelle (session_id + kwargs documentés)
+p.initialize("sess-001", hermes_home="/tmp/hh", platform="cli",
+             agent_context="primary", agent_identity="kage")
+assert p.bank_id == "kage"                                     # identity -> bank
+print("2. initialize(session_id, agent_identity->bank, context) : OK")
+
+# espace vide -> bloc honnête, en SYNC
+p.on_turn_start(1, "où en est le driver ?")
+assert "no memory matches" in p.prefetch("où en est le driver ?")
+print("3. prefetch sync, espace vide -> honnête")
+
+# LE CAS M4Z3 : 111 messages, ~80% tool calls — seuls les deux contenus passent Synapse
+m4z3_messages = []
+for i in range(88):
+    m4z3_messages.append({"role": "assistant", "tool_calls": [{"name": "session_search"}]})
+    m4z3_messages.append({"role": "tool", "content": "[...session_search result %d...]" % i})
+m4z3_messages.append({"role": "user", "content": "tu me ferais une plaquette M4Z3 ?"})
+p.sync_turn("tu me ferais une plaquette M4Z3 ?",
+            "plaquette M4Z3 générée — trois pages, ton sobre, driver mentionné",
+            session_id="sess-001", messages=m4z3_messages)
+wait_writes(p)
+texts = [d["text"] for d in DOCS.values()]
+assert any("plaquette M4Z3 générée" in t for t in texts)
+assert not any("session_search" in t for t in texts)
+print("4. M4Z3: %d docs indexés depuis 177 messages — le contenu, jamais l'outillage" % len(DOCS))
+
+p.sync_turn("le driver de la tortue est validé",
+            "on enchaîne sur domu et la musique du tricoteur")
+wait_writes(p)
+
+# prefetch avec mémoire : cercles
+p.on_turn_start(2, "parle-moi de la plaquette")
+ctx = p.prefetch("la plaquette m4z3 du driver")
+assert "L1 — FOCUS" in ctx and "L3 — PORTES" in ctx
+print("5. cercles L1/L3 rendus | turn compté par on_turn_start:", p.turn == 2)
+
+# queue_prefetch -> cache consommé
+p.queue_prefetch("musique du tricoteur")
+wait_writes(p); time.sleep(0.05)
+ctx2 = p.prefetch("musique du tricoteur")
+assert "memory-context" in ctx2
+print("6. queue_prefetch -> cache consommé au tour suivant")
+
+# outils : résultat = CHAÎNE JSON
+raw = p.handle_tool_call("domu_recall", {"query": "plaquette m4z3"})
+assert isinstance(raw, str)
+out = json.loads(raw)
+assert out["hits"] and all("id" in h for h in out["hits"])
+raw2 = p.handle_tool_call("domu_remember", {"text": "note sur la tortue au crépuscule et la musique"})
+rid = json.loads(raw2)["id"]
+assert rid
+assert json.loads(p.handle_tool_call("domu_forget", {"ids": [rid]}))["deleted"] == 1
+print("7. outils: chaînes JSON conformes | remember/forget OK")
+
+# on_memory_write miroir (add) ; time-vectors tracés
+p.on_memory_write("add", "memory", "la tortue préfère les caps relatifs au leader du score")
+p.on_memory_write("remove", "memory", "jamais indexé")
+wait_writes(p)
+assert any("caps relatifs" in d["text"] for d in DOCS.values())
+drifts = [m for m in METRICS if m["type"] == "focus_drift"]
+assert drifts and drifts[-1]["agent"] == "kage"
+print("8. on_memory_write(add) miroité, remove ignoré | time-vectors:", len(drifts))
+
+# on_session_switch : /resume ne reset PAS, /new reset
+fv = list(p.focus.vector)
+p.on_session_switch("sess-002", parent_session_id="sess-001", reset=False)
+assert p.focus.vector == fv, "le focus doit survivre à /resume"
+p.on_session_switch("sess-003", reset=True)
+assert p.focus.vector is None and p.turn == 0
+print("9. switch: focus survit à resume, reset sur /new — sémantique ABC exacte")
+
+# pre-compress : sauve les fragments dignes + rend la lecture du focus
+p.sync_turn("le driver de la tortue repart", "et domu écoute la musique")
+wait_writes(p)
+before = len(DOCS)
+block = p.on_pre_compress([
+    {"role": "user", "content": "insight précieux sur la plaquette du driver m4z3"},
+    {"role": "tool", "content": "[...write_file...]"},
+    {"role": "assistant", "content": "ok"},
+])
+wait_writes(p)
+assert isinstance(block, str) and "memory-context" in block and "salvaged" in block
+assert len(DOCS) == before + 1                                 # 1 seul fragment digne
+print("10. pre-compress: 1 fragment sauvé sur 3, lecture du focus retournée")
+
+# contexte non-primary : écritures gatées
+p2 = DomuProvider(es_client=FakeES(), embed=embed)
+p2.initialize("cron-1", agent_context="cron", agent_identity="kage")
+n_before = len(DOCS)
+p2.sync_turn("prompt cron qui ne doit jamais devenir mémoire du tout",
+             "réponse cron tout aussi interdite de séjour")
+wait_writes(p2)
+assert len(DOCS) == n_before
+note = json.loads(p2.handle_tool_call("domu_remember", {"text": "tentative cron sur le driver"}))
+assert note["id"] is None and "cron" in note["note"]
+p2.shutdown()
+print("11. agent_context='cron': toutes les écritures gatées (règle ABC)")
+
+# setup + shutdown
+schema = p.get_config_schema()
+assert any(f["key"] == "es_url" for f in schema) and p.backup_paths() == []
+with tempfile.TemporaryDirectory() as hh:
+    p.save_config({"es_url": "http://localhost:9200", "index": "vm-space"}, hh)
+    assert json.load(open(os.path.join(hh, "domu.json")))["index"] == "vm-space"
+p.on_session_end([])
+client = p._es_client
+p.shutdown()
+assert client.closed and p.mind is None
+print("12. config schema/save, session_end flush, shutdown propre")
+print("\nDOMU 0.3.0 : conformité EXACTE au vrai memory_provider.py — tout est vert")

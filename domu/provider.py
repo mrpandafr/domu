@@ -1,35 +1,40 @@
-"""domu.provider — the first link of Wired: vectormind wired into Hermes.
+"""domu.provider — vectormind wired into Hermes, conformant to the real ABC.
 
-Implements the MemoryProvider contract described in DOMU-HERMES.md
-(13 methods). The provider owns nothing clever: vectormind holds the
-circles, Synapse holds the filter, Elasticsearch holds the memory. Domu
-only orchestrates — and enforces the one absolute rule:
+Implements ``agent.memory_provider.MemoryProvider`` exactly (the 315-line
+source, not the summary table). Two structural consequences of that source:
 
-    **Never embroider reality.** Zero hits -> say so. Orphan apax -> admit
-    it. The memory context never contains anything the space didn't return.
+* **The interface is synchronous.** Hermes calls plain methods and expects
+  them fast; the ABC itself says "use background threads for the actual
+  recall and return cached results here". Domu therefore runs its async
+  core (vectormind + AsyncElasticsearch) on a dedicated event loop in a
+  daemon thread; sync methods submit coroutines with
+  ``run_coroutine_threadsafe``. ``prefetch`` serves the cached result from
+  ``queue_prefetch`` when present, else does a bounded recall
+  (``prefetch_timeout``, default 1.5s) and returns "" on timeout — honest,
+  never blocking the turn.
+* **Writes are context-gated.** ``initialize`` receives ``agent_context``;
+  anything other than "primary" (cron, subagent, flush) makes every write
+  path a no-op, per the ABC's warning that cron prompts would corrupt user
+  representations.
 
-Signatures note: memory_provider.py (315 lines) wasn't available when this
-was written; every hook accepts a tolerant ``**kwargs`` tail and the base
-class is imported defensively. Ship memory_provider.py for the exact
-one-pass conformity check (the base.py lesson, applied preemptively).
+The one absolute rule stays structural: nothing enters a context block that
+the space didn't return. Zero hits -> the block says so.
 
-Isolation (one cluster, N agents) rides on tags, the field the space
-already indexes:
-
-    bank:{bank_id}     physical-ish separation (native filter)
-    scope:{private|shared|public}
-
-An agent reads: its own bank (all scopes) + other banks' ``scope:public``.
-``scope:private`` of others never passes the door — enforced in the query,
-not in post-processing.
+Isolation rides on tags the space already indexes:
+``bank:{agent_identity}`` + ``scope:{private|shared|public}``; reads are
+scoped in the query (own bank + others' scope:public), never post-filtered.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
+import threading
+from concurrent.futures import Future
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Dict, List, Optional
 
 from vectormind import Focus, Hit, Recall, VectorMind
 
@@ -50,162 +55,266 @@ _ABSOLUTE_RULE = (
 )
 
 
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 class DomuProvider(MemoryProvider):
-    """One space, three circles, thirteen hooks."""
+    """One space, three circles, one synchronous face for Hermes."""
 
     def __init__(
         self,
+        config: Dict[str, Any] | None = None,
         *,
-        es_client_factory: Callable[[], Any] | None = None,
         es_client: Any = None,
-        embed: Callable[[list[str]], Any],
-        bank_id: str,
-        index: str = "vm-space",
-        metrics_index: str = "domu-metrics",
-        categories: dict[str, str] | None = None,
-        dims: int | None = None,
-        l1_size: int = 3,
-        l2_size: int = 7,
-        focus_alpha: float = 0.35,
-        read_public_of_others: bool = True,
+        es_client_factory: Callable[[], Any] | None = None,
+        embed: Callable[[List[str]], Any] | None = None,
+        categories: Dict[str, str] | None = None,
     ) -> None:
+        self.config = dict(config or {})
+        self._es_client = es_client
         self._client_factory = es_client_factory
-        self._client = es_client
-        self._embed = embed
-        self.bank_id = bank_id
-        self.index = index
-        self.metrics_index = metrics_index
-        self._categories_seed = categories
-        self._dims = dims
-        self.l1_size, self.l2_size = l1_size, l2_size
-        self._focus_alpha = focus_alpha
-        self._read_public = read_public_of_others
+        self._embed = embed or self.config.get("embed")
+        self._categories_seed = categories or self.config.get("categories")
+        self.index = self.config.get("index", "vm-space")
+        self.metrics_index = self.config.get("metrics_index", "domu-metrics")
+        self.l1_size = int(self.config.get("l1_size", 3))
+        self.l2_size = int(self.config.get("l2_size", 7))
+        self._focus_alpha = float(self.config.get("focus_alpha", 0.35))
+        self._prefetch_timeout = float(self.config.get("prefetch_timeout", 1.5))
+        self._read_public = bool(self.config.get("read_public_of_others", True))
 
+        # runtime (set by initialize)
+        self.bank_id: str = self.config.get("bank_id", "")
+        self.session_id: str = ""
+        self.agent_context: str = "primary"
         self.mind: VectorMind | None = None
-        self.focus = Focus(alpha=focus_alpha)
+        self.focus = Focus(alpha=self._focus_alpha)
         self.turn = 0
-        self._prefetched: tuple[str, str] | None = None   # (query, block)
-        self._bg: set[asyncio.Task] = set()
-        self._recent: list[tuple[str, list[float]]] = []  # dedup window
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._prefetched: tuple[str, str] | None = None
+        self._pending: set[Future] = set()
+        self._recent: list[tuple[str, list[float]]] = []
 
     # ------------------------------------------------------------------
-    # identity & lifecycle
+    # identity & lifecycle (ABC: name, is_available, initialize, shutdown)
     # ------------------------------------------------------------------
 
     @property
     def name(self) -> str:
         return "domu"
 
-    @property
     def is_available(self) -> bool:
-        return self.mind is not None
+        """Config/deps check only — no network, per the ABC contract."""
+        if self._embed is None:
+            return False
+        if self._es_client is not None or self._client_factory is not None:
+            return True
+        if self.config.get("es_url") or os.getenv("DOMU_ES_URL"):
+            try:
+                import elasticsearch  # noqa: F401
+                return True
+            except ImportError:
+                return False
+        return False
 
-    async def initialize(self, **kwargs: Any) -> None:
-        """Connect ES, open the circles, stamp the isolation scope."""
-        if self._client is None:
-            if self._client_factory is None:
-                raise RuntimeError("DomuProvider needs es_client or es_client_factory")
-            self._client = self._client_factory()
+    def initialize(self, session_id: str, **kwargs: Any) -> None:
+        """Start the background loop, connect ES, open the circles.
+
+        Honors the documented kwargs: ``agent_identity`` becomes the bank
+        (per-profile scoping), ``agent_context`` gates every write path.
+        """
+        self.session_id = session_id
+        self.agent_context = kwargs.get("agent_context", "primary")
+        self.bank_id = (self.bank_id or kwargs.get("agent_identity")
+                        or kwargs.get("agent_workspace") or "hermes")
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._loop.run_forever,
+                                        name="domu-loop", daemon=True)
+        self._thread.start()
+        self._run(self._ainit(), timeout=30)
+        logger.info("domu ready: index=%s bank=%s context=%s",
+                    self.index, self.bank_id, self.agent_context)
+
+    async def _ainit(self) -> None:
+        if self._es_client is None:
+            if self._client_factory is not None:
+                self._es_client = self._client_factory()
+            else:
+                from elasticsearch import AsyncElasticsearch  # type: ignore
+                url = self.config.get("es_url") or os.environ["DOMU_ES_URL"]
+                kwargs: Dict[str, Any] = {"hosts": [url], "retry_on_timeout": True,
+                                          "max_retries": 3, "http_compress": True}
+                api_key = self.config.get("api_key") or os.getenv("DOMU_ES_API_KEY")
+                if api_key:
+                    kwargs["api_key"] = api_key
+                self._es_client = AsyncElasticsearch(**kwargs)
         self.mind = await VectorMind.open(
-            self._client, self._embed, index=self.index, dims=self._dims,
-            categories=self._categories_seed,
+            self._es_client, self._embed, index=self.index,
+            dims=self.config.get("dims"), categories=self._categories_seed,
         )
-        # isolation: reads are scoped in the query, never post-filtered
         visibility: dict = {"bool": {"should": [
             {"term": {"tags": f"bank:{self.bank_id}"}},
         ], "minimum_should_match": 1}}
         if self._read_public:
-            visibility["bool"]["should"].append(
-                {"term": {"tags": "scope:public"}})
+            visibility["bool"]["should"].append({"term": {"tags": "scope:public"}})
         self.mind.space.scope = [visibility]
         self.mind.search.scope = [visibility]
-        logger.info("domu ready: index=%s bank=%s", self.index, self.bank_id)
 
-    async def shutdown(self, **kwargs: Any) -> None:
-        for t in list(self._bg):
-            t.cancel()
-        self._bg.clear()
-        if self._client is not None and hasattr(self._client, "close"):
-            await self._client.close()
+    def shutdown(self) -> None:
+        """Flush pending writes, close the client, stop the loop."""
+        for fut in list(self._pending):
+            try:
+                fut.result(timeout=10)
+            except Exception:
+                pass
+        self._pending.clear()
+        if self._loop is not None:
+            if self._es_client is not None and hasattr(self._es_client, "close"):
+                try:
+                    self._run(self._es_client.close(), timeout=10)
+                except Exception:
+                    pass
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            if self._thread is not None:
+                self._thread.join(timeout=5)
+        self._loop = None
+        self._thread = None
         self.mind = None
 
     # ------------------------------------------------------------------
-    # the agent-facing surface
+    # loop plumbing
     # ------------------------------------------------------------------
 
-    def system_prompt_block(self, **kwargs: Any) -> str:
+    def _run(self, coro: Any, *, timeout: float | None = None) -> Any:
+        """Submit to the domu loop and wait (bounded)."""
+        assert self._loop is not None, "domu is not initialized"
+        return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout)
+
+    def _submit(self, coro: Any) -> None:
+        """Fire-and-forget on the domu loop; tracked for shutdown flush."""
+        if self._loop is None:
+            return
+        fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        self._pending.add(fut)
+        fut.add_done_callback(self._pending.discard)
+
+    @property
+    def _writes_enabled(self) -> bool:
+        return self.agent_context == "primary" and self.mind is not None
+
+    # ------------------------------------------------------------------
+    # system prompt / prefetch (ABC-exact signatures)
+    # ------------------------------------------------------------------
+
+    def system_prompt_block(self) -> str:
         doors = ", ".join(self.mind.categories.names) if (
             self.mind and self.mind.categories) else "—"
         return (
             "You have access to Domu, a vector memory over one shared "
-            "space with three concentric readings: L1 the current focus, "
-            "L2 the vault, L3 the doors ({doors}). A <memory-context> "
-            "block precedes each turn; tools domu_recall / domu_remember / "
-            "domu_forget are available for explicit access. {rule}"
-        ).format(doors=doors, rule=_ABSOLUTE_RULE)
+            f"space with three concentric readings: L1 the current focus, "
+            f"L2 the vault, L3 the doors ({doors}). A <memory-context> "
+            "block precedes turns; tools domu_recall / domu_remember / "
+            f"domu_forget give explicit access. {_ABSOLUTE_RULE}"
+        )
 
-    async def prefetch(self, query: str, **kwargs: Any) -> str:
-        """The per-turn L1 context (blocking path). Returns the
-        <memory-context> block — honest by construction: empty space,
-        empty block that says so."""
+    def prefetch(self, query: str, *, session_id: str = "") -> str:
+        """Fast path per the ABC: cached result if queue_prefetch warmed it,
+        else a bounded recall; "" on timeout (and the recall is re-queued
+        so the *next* turn gets it)."""
+        if self.mind is None:
+            return ""
         if self._prefetched and self._prefetched[0] == query:
             block = self._prefetched[1]
             self._prefetched = None
             return block
-        return await self._build_context(query)
+        try:
+            return self._run(self._build_context(query),
+                             timeout=self._prefetch_timeout)
+        except Exception:
+            self.queue_prefetch(query, session_id=session_id)
+            return ""
 
-    def queue_prefetch(self, query: str, **kwargs: Any) -> None:
-        """Background path: warm the next turn's context."""
+    def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         async def _job() -> None:
             try:
                 self._prefetched = (query, await self._build_context(query))
             except Exception:
-                logger.warning("queue_prefetch failed", exc_info=True)
-        task = asyncio.get_event_loop().create_task(_job())
-        self._bg.add(task)
-        task.add_done_callback(self._bg.discard)
+                logger.debug("queue_prefetch failed", exc_info=True)
+        if self._loop is not None:
+            self._submit(_job())
 
-    async def sync_turn(self, content: str, *, role: str = "user",
-                        scope: str = "shared", **kwargs: Any) -> str | None:
-        """Index one turn — through Synapse's gates, never around them.
+    # ------------------------------------------------------------------
+    # writes (ABC: sync_turn; hooks: on_memory_write, on_delegation)
+    # ------------------------------------------------------------------
 
-        Returns the stored id, or None when Synapse said no (noise, too
-        small, duplicate). Also moves the focus and records its drift as a
-        time-vector."""
+    def sync_turn(
+        self,
+        user_content: str,
+        assistant_content: str,
+        *,
+        session_id: str = "",
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        """Persist a completed turn — non-blocking, through Synapse's gates.
+
+        The M4Z3 case is the design target: a 111-message session that is
+        80% tool calls. Only ``user_content`` and ``assistant_content`` are
+        candidates; the raw ``messages`` (tool calls, tool results) are
+        deliberately ignored — rule 3 at the architecture level. Each
+        candidate then still faces Synapse (noise markers, 10-char floor,
+        cosine-0.95 dedup) before touching the space.
+        """
+        if not self._writes_enabled:
+            return
+        self._submit(self._aremember(user_content, role="user",
+                                     session_id=session_id or self.session_id))
+        self._submit(self._aremember(assistant_content, role="assistant",
+                                     session_id=session_id or self.session_id))
+
+    async def _aremember(self, content: str, *, role: str,
+                         scope: str = "shared", session_id: str = "") -> str | None:
         if self.mind is None or not worth_remembering(content):
             return None
         vec = await self.mind.embed_one(content)
-        # dedup against the recent window (cosine > 0.95 -> same thought)
         window_texts = [t for t, _ in self._recent] + [content]
         window_vecs = [v for _, v in self._recent] + [vec]
         outcome = dedup(window_texts, window_vecs)
         if len(window_texts) - 1 in outcome.aliases:
-            return None                       # a redite of something recent
+            return None
         self._recent = [(window_texts[i], window_vecs[i])
                         for i in outcome.kept][-20:]
-
-        previous_drift = self.focus.last_drift
+        previous = self.focus.last_drift
         self.focus.update(vec)
         await self._record_metric("focus_drift", self.focus.last_drift,
-                                  delta=self.focus.last_drift - previous_drift,
+                                  delta=self.focus.last_drift - previous,
                                   context=content[:80])
         ids = await self.mind.remember(
             [content],
             tags=[[f"bank:{self.bank_id}", f"scope:{scope}", f"role:{role}",
                    "type:turn"]],
-            meta=[{"turn": self.turn, "role": role}],
+            meta=[{"turn": self.turn, "role": role,
+                   "session_id": session_id or self.session_id}],
         )
         return ids[0]
 
+    def on_memory_write(self, action: str, target: str, content: str,
+                        metadata: Optional[Dict[str, Any]] = None) -> None:
+        """Mirror built-in memory writes ('add'/'replace'); 'remove' is not
+        mirrored — the space keeps history, forgetting is explicit."""
+        if action in ("add", "replace") and self._writes_enabled:
+            self._submit(self._aremember(content, role="memory-tool"))
+
+    def on_delegation(self, task: str, result: str, *,
+                      child_session_id: str = "", **kwargs: Any) -> None:
+        if not self._writes_enabled:
+            return
+        text = f"[delegation] {task}: {result}" if task else result
+        self._submit(self._aremember(text, role="subagent",
+                                     session_id=child_session_id))
+
     # ------------------------------------------------------------------
-    # tools
+    # tools (ABC: schemas + JSON-string results)
     # ------------------------------------------------------------------
 
-    def get_tool_schemas(self, **kwargs: Any) -> list[dict]:
+    def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [
             {"name": "domu_recall",
              "description": "Search the memory space. Returns the concentric "
@@ -232,75 +341,130 @@ class DomuProvider(MemoryProvider):
              }, "required": ["ids"]}},
         ]
 
-    async def handle_tool_call(self, name: str, arguments: dict,
-                               **kwargs: Any) -> Any:
+    def handle_tool_call(self, tool_name: str, args: Dict[str, Any],
+                         **kwargs: Any) -> str:
+        """ABC contract: MUST return a JSON string."""
+        try:
+            result = self._run(self._atool(tool_name, args), timeout=30)
+        except Exception as exc:
+            result = {"error": f"domu tool failed: {exc}"}
+        return json.dumps(result, ensure_ascii=False)
+
+    async def _atool(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         if self.mind is None:
             return {"error": "domu is not initialized"}
         if name == "domu_recall":
             recall = await self.mind.recall(
-                arguments["query"], focus=self.focus,
-                k=int(arguments.get("k", 8)),
-                tags=arguments.get("tags"),
-            )
+                args["query"], focus=self.focus, k=int(args.get("k", 8)),
+                tags=args.get("tags"))
             if not len(recall):
                 return {"hits": [], "note": "no memory matches — say so, "
                                              "do not invent"}
             return {"hits": [self._hit_dict(h) for h in recall]}
         if name == "domu_remember":
-            stored = await self.sync_turn(arguments["text"], role="agent",
-                                          scope=arguments.get("scope", "shared"))
+            if not self._writes_enabled:
+                return {"id": None, "note": f"writes disabled in "
+                                             f"{self.agent_context!r} context"}
+            stored = await self._aremember(args["text"], role="agent",
+                                           scope=args.get("scope", "shared"))
             return {"id": stored} if stored else {
                 "id": None, "note": "rejected by Synapse (noise/dup/too small)"}
         if name == "domu_forget":
-            return {"deleted": await self.mind.forget(arguments["ids"])}
+            return {"deleted": await self.mind.forget(args["ids"])}
         return {"error": f"unknown domu tool {name!r}"}
 
     # ------------------------------------------------------------------
-    # session hooks
+    # optional hooks (ABC-exact signatures)
     # ------------------------------------------------------------------
 
-    def on_turn_start(self, **kwargs: Any) -> None:
-        self.turn += 1
+    def on_turn_start(self, turn_number: int, message: str, **kwargs: Any) -> None:
+        self.turn = turn_number
 
-    async def on_session_end(self, **kwargs: Any) -> None:
-        for t in list(self._bg):
+    def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+        """Session boundary: wait for the queued writes to land."""
+        for fut in list(self._pending):
             try:
-                await t
+                fut.result(timeout=10)
             except Exception:
                 pass
-        self._bg.clear()
+        self._pending.clear()
 
-    def on_session_switch(self, **kwargs: Any) -> None:
-        """/new, /resume — the center of attention resets; the space stays."""
-        self.focus = Focus(alpha=self._focus_alpha)
+    def on_session_switch(self, new_session_id: str, *,
+                          parent_session_id: str = "", reset: bool = False,
+                          rewound: bool = False, **kwargs: Any) -> None:
+        """The ABC's semantics, honored precisely: the focus only resets on
+        a genuinely new conversation (``reset=True``). /resume, /branch and
+        compression continue the same logical conversation — the center of
+        attention survives the id rotation."""
+        self.session_id = new_session_id
         self._prefetched = None
-        self._recent.clear()
-        self.turn = 0
+        if reset:
+            self.focus = Focus(alpha=self._focus_alpha)
+            self._recent.clear()
+            self.turn = 0
+        if rewound:
+            self._recent.clear()
 
-    async def on_pre_compress(self, **kwargs: Any) -> str:
-        """What survives context compression: the L1 reading of the current
-        focus, nothing invented."""
+    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+        """Extract from the messages about to be discarded: run their user/
+        assistant contents through Synapse (so the salient ones become
+        memory before they vanish), and return the L1 reading of the
+        current focus for the compression prompt. Nothing invented."""
+        salvaged = 0
+        if self._writes_enabled:
+            for m in messages or []:
+                if m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str):
+                    if worth_remembering(m["content"]):
+                        self._submit(self._aremember(m["content"],
+                                                     role=m["role"]))
+                        salvaged += 1
         if self.mind is None or self.focus.vector is None:
             return ""
-        return await self._build_context("(current focus)",
-                                         query_vector=self.focus.vector)
+        try:
+            block = self._run(
+                self._build_context("(current focus)",
+                                    query_vector=self.focus.vector),
+                timeout=self._prefetch_timeout * 2)
+        except Exception:
+            return ""
+        if salvaged:
+            block += f"\n({salvaged} fragments salvaged to memory before compression)"
+        return block
 
-    async def on_memory_write(self, content: str, **kwargs: Any) -> None:
-        """A Hermes-side memory tool wrote something: mirror it (gated)."""
-        await self.sync_turn(content, role="agent", scope="shared")
+    # ------------------------------------------------------------------
+    # setup / backup (ABC)
+    # ------------------------------------------------------------------
 
-    async def on_delegation(self, result: str, *, task: str = "",
-                            **kwargs: Any) -> None:
-        """A subagent finished: its outcome becomes memory (gated)."""
-        text = f"[delegation] {task}: {result}" if task else result
-        await self.sync_turn(text, role="subagent", scope="shared")
+    def get_config_schema(self) -> List[Dict[str, Any]]:
+        return [
+            {"key": "es_url", "description": "Elasticsearch endpoint URL",
+             "required": True, "env_var": "DOMU_ES_URL",
+             "default": "http://localhost:9200"},
+            {"key": "api_key", "description": "Elasticsearch API key (optional)",
+             "secret": True, "env_var": "DOMU_ES_API_KEY"},
+            {"key": "index", "description": "Space index name",
+             "default": "vm-space"},
+            {"key": "bank_id", "description": "Memory bank (defaults to the "
+                                               "agent identity)"},
+        ]
+
+    def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
+        path = os.path.join(hermes_home, "domu.json")
+        os.makedirs(hermes_home, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(values, f, indent=2, ensure_ascii=False)
+
+    def backup_paths(self) -> List[str]:
+        """Memory lives in Elasticsearch, config lives under HERMES_HOME —
+        nothing external on disk."""
+        return []
 
     # ------------------------------------------------------------------
     # internals
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _hit_dict(h: Hit) -> dict:
+    def _hit_dict(h: Hit) -> Dict[str, Any]:
         return {"id": h.id, "text": h.text, "ring": h.ring,
                 "category": h.category, "score": round(h.score, 6),
                 "tags": h.tags}
@@ -308,10 +472,10 @@ class DomuProvider(MemoryProvider):
     async def _record_metric(self, mtype: str, value: float, *,
                              delta: float | None = None,
                              context: str = "") -> None:
-        """Time-vectors (DOMU-HERMES): the numeric trace of time passing."""
         try:
-            await self._client.index(index=self.metrics_index, document={
-                "at": _now().isoformat(), "type": mtype, "agent": self.bank_id,
+            await self._es_client.index(index=self.metrics_index, document={
+                "at": datetime.now(timezone.utc).isoformat(),
+                "type": mtype, "agent": self.bank_id,
                 "value": round(float(value), 6),
                 "delta": round(float(delta), 6) if delta is not None else None,
                 "context": context,
@@ -321,12 +485,9 @@ class DomuProvider(MemoryProvider):
 
     async def _build_context(self, query: str,
                              query_vector: list[float] | None = None) -> str:
-        """Render the <memory-context> block — L1/L2/L3, and the honest
-        empty form. Nothing enters this block that the space didn't return."""
         if self.mind is None:
             return ""
         if query_vector is not None:
-            # focus-driven variant (pre-compress): recall around the center
             hits = await self.mind.search.search(
                 query_text=query, query_vector=query_vector,
                 k=self.l1_size + self.l2_size)
@@ -338,12 +499,10 @@ class DomuProvider(MemoryProvider):
         else:
             recall = await self.mind.recall(
                 query, focus=self.focus, k=self.l1_size + self.l2_size)
-
         if not len(recall):
             return ("<memory-context>\n"
                     "(no memory matches this focus — say so rather than "
                     "invent)\n</memory-context>")
-
         l1 = (recall.l1 or recall.hits)[:self.l1_size]
         l1_ids = {h.id for h in l1}
         l2 = [h for h in recall.hits if h.id not in l1_ids][:self.l2_size]
