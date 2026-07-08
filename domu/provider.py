@@ -173,6 +173,8 @@ class DomuProvider(MemoryProvider):
                 if api_key:
                     kwargs["api_key"] = api_key
                 self._es_client = AsyncElasticsearch(**kwargs)
+        if not await self._es_client.ping():
+            raise RuntimeError("Elasticsearch not reachable")
         self.mind = await VectorMind.open(
             self._es_client, self._embed, index=self.index,
             dims=self.config.get("dims"), fields=self._fields,
