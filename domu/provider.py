@@ -96,6 +96,8 @@ class DomuProvider(MemoryProvider):
         self.metrics_index = self.config.get("metrics_index", "domu-metrics")
         self.l1_size = int(self.config.get("l1_size", 3))
         self.l2_size = int(self.config.get("l2_size", 7))
+        self.l1_max_chars = int(self.config.get("l1_max_chars", 400))
+        self.l2_max_chars = int(self.config.get("l2_max_chars", 160))
         self._focus_alpha = float(self.config.get("focus_alpha", 0.35))
         self._prefetch_timeout = float(self.config.get("prefetch_timeout", 1.5))
         self._read_public = bool(self.config.get("read_public_of_others", True))
@@ -601,19 +603,16 @@ class DomuProvider(MemoryProvider):
             recall = await self.mind.recall(
                 query, focus=self.focus, k=self.l1_size + self.l2_size)
         if not len(recall):
-            return ("<memory-context>\n"
-                    "(no memory matches this focus — say so rather than "
-                    "invent)\n</memory-context>")
+            return "(no memory matches this focus — say so rather than invent)"
         l1 = (recall.l1 or recall.hits)[:self.l1_size]
         l1_ids = {h.id for h in l1}
         l2 = [h for h in recall.hits if h.id not in l1_ids][:self.l2_size]
         doors = sorted({h.category for h in recall.hits if h.category})
-        lines = ["<memory-context>", "L1 — FOCUS"]
-        lines += [f"  • {h.text}" for h in l1]
+        lines = ["L1 — FOCUS"]
+        lines += [f"  • {h.text[:self.l1_max_chars]}" for h in l1]
         if l2:
             lines.append("L2 — VAULT")
-            lines += [f"  • {h.text[:160]}" for h in l2]
+            lines += [f"  • {h.text[:self.l2_max_chars]}" for h in l2]
         if doors:
             lines.append(f"L3 — PORTES: {', '.join(doors)}")
-        lines.append("</memory-context>")
         return "\n".join(lines)
