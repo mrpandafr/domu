@@ -276,31 +276,31 @@ Categories show "?" because the 6 doors haven't been seeded yet.
 
 ---
 
-## Wired — the neural network
+## Wired — Domu nodes wired by ES
 
-Wired is the name of the complete system. Not just Domu — the entire **neural network** connecting every component. The word carries two meanings:
-
-1. **Pipeline** — the orchestration chain from raw memory to structured recall
-2. **Network** — every component is *wired* to every other, like neurons in a brain
+Wired is simply: **multiple Domu instances sharing the same Elasticsearch cluster.**
 
 ```
-    ┌───────────────────────────────────────────────────────┐
-    │                    THE WIRED NETWORK                    │
-    │                                                        │
-    │  User ←→ Synapse ←→ Domu ←→ vectormind ←→ ES ←→ Hermes│
-    │       ↕        ↕        ↕        ↕        ↕        ↕   │
-    │  (focus)  (noise)  (tools)  (circles)(storage)(agent) │
-    │              ↕        ↕        ↕                       │
-    │          dedup    gates   apax boost                   │
-    │                                                        │
-    │  ─── Everything is back-connected ─────────────────    │
-    │  Synapse feeds Domu. Domu feeds vectormind.              │
-    │  vectormind reads ES. Hermes reads vectormind.          │
-    │  A change in ES propagates back through the loop.       │
-    └───────────────────────────────────────────────────────┘
+   ┌──────────┐     ┌──────────┐     ┌──────────┐
+   │  Kage    │     │  Travel  │     │   Miss   │   ← Domu providers
+   │ Domu     │     │  Domu    │     │  Domu    │
+   └────┬─────┘     └────┬─────┘     └────┬─────┘
+        │                │                │
+        └────────────────┼────────────────┘
+                         │
+                  ┌──────▼──────┐
+                  │  ES CLUSTER │        ← the wire
+                  │  public-    │
+                  │  memory_    │
+                  │  units      │
+                  │  bank_id +  │
+                  │  scope ACL  │
+                  └─────────────┘
 ```
 
-The name was coined by JS on 8 July 2026 during a break. The realization: everything we built — the driver, vectormind, Domu, Synapse — wasn't a stack of layers. It was a **circuit**. Each component connects to every other in a closed loop:
+Each agent runs its own DomuProvider. All share the same ES. Isolation is by `bank_id` + `scope` — enforced in the query, never post-filtered.
+
+Nothing more. No neural network, no complex circuit. Just Domu nodes connected by ES — the simplest possible definition of a distributed memory system.
 
 - The 16 June (birth of Kage on Discord, "bienvenu dans ton espace") is **wired** to the 29 June (kill switch on the balcony) which is **wired** to the 7 July (Domu conceptualized) which is **wired** to the 4 July lesson (backup → restart → test)
 - The values (when data is missing) are **wired** to the absolute rule "never embroider reality"
