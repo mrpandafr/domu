@@ -1,133 +1,362 @@
-# Domu (童夢)
+# Domu (童夢) — A Child's Dream
 
-## À quoi ça sert
+> *The first true vector expansion engine for agent memory.*
+> *One space. Three circles. Five verbs. Zero bullshit.*
 
-Domu est un moteur de mémoire vectorielle pour agents IA. C'est la **première vraie solution vectorielle d'expansion de corpus** — un système qui ne se contente pas de stocker des embeddings, mais qui *expend* la mémoire en enrichissant chaque concept par des appels externes (SearXNG, Wikipedia, extraction web) avant de l'intégrer à l'espace vectoriel.
+---
 
-Il permet à un agent de :
-- Se souvenir d'une conversation entre sessions (L1)
-- Consulter une base de connaissance vectorielle extensible (L2)
-- Naviguer par catégories sémantiques fixes (L3)
-- Enrichir automatiquement les concepts rares (apax) par recherche externe
-- Détecter les changements de sujet (focus drift)
-- Filtrer le bruit technique (tool calls, résultats vides) avec Synapse
+## What it is
 
-## Définition du mot japonais
+Domu is a vector memory engine for AI agents. It is the **first true vector corpus expansion solution** — a system that doesn't just store embeddings, but *expands* memory by enriching every concept through external calls (SearXNG, Wikipedia, web extraction) before integrating it into the vector space.
 
-**Domu (童夢)** = enfant (童) + rêve (夢).
+```
+    ┌──────────────────────────────────────────────────┐
+    │                   DOMU (童夢)                      │
+    │                                                    │
+    │  query ──→ recall ──→ found ? ──→ return circles  │
+    │                          │                        │
+    │                          └── no ? ──→ external    │
+    │                                      call         │
+    │                                        │          │
+    │                                        ↓          │
+    │                                   enrich & index  │
+    │                                        │          │
+    │                                        ↓          │
+    │                                   "I couldn't"    │
+    │                                   (honest fallback)│
+    └──────────────────────────────────────────────────┘
+```
 
-Titre d'un manga de Katsuhiro Ōtomo (créateur d'Akira, qui a donné son nom au Corpus Tamashii). L'histoire d'un enfant aux pouvoirs psychiques dans une cité HLM.
+It lets an agent:
+- **L1 — Remember** conversations across sessions (focus ring)
+- **L2 — Query** an expandable vector knowledge base (vault ring)
+- **L3 — Navigate** through fixed semantic categories (door ring)
+- **Enrich** rare concepts (hapax) via external search
+- **Detect** topic shifts (focus drift, measured per turn)
+- **Filter** technical noise (tool calls, empty results) via Synapse
 
-Le nom porte la philosophie du projet : un système mémoire qui garde la pureté de vision d'un enfant — simple, direct, sans couches d'abstraction inutiles. Une architecture qui tient dans 4 fichiers, pas dans 598 Ko de `memory_engine.py`.
+---
 
-## Réponse à quel problème
+## The name
 
-Avant Domu, les systèmes de mémoire pour agents IA utilisaient des bases relationnelles (PostgreSQL) avec des couches d'ORM pour simuler le vectoriel. Résultat : des fichiers monolithiques de 598 Ko, des imports circulaires, des modules entiers pour des fonctionnalités que le moteur de recherche gère nativement.
+**Domu (童夢)** = child (童) + dream (夢).
 
-Domu résout ce problème par une architecture radicalement plus simple :
+A manga by Katsuhiro Ōtomo (creator of Akira, which gave its name to the Tamashii Corpus). The story of a child with psychic powers in a housing project.
 
-| Approche classique | Domu |
+The name carries the project's philosophy: a memory system that keeps a child's clarity — simple, direct, no unnecessary abstraction layers. An architecture that fits in 4 files, not in a 600 KB monolith.
+
+```
+            ╱  ╲
+           ╱    ╲
+          │ DOMU │  ← 童夢 = child dream
+          │      │
+          │ pure │     Otomo → Akira → Tamashii
+          │clear │     Otomo → Domu  → memory engine
+          │simple│
+          └──────┘
+```
+
+---
+
+## The problem it solves
+
+Before Domu, agent memory systems used relational databases (PostgreSQL) with ORM layers to simulate vector search. Result: monolithic files, circular imports, entire modules for features the search engine handles natively.
+
+| Approach classical | Domu |
 |:-------------------|:------|
-| Fichier monolithique (598 Ko) | ~800 lignes total |
-| Base relationnelle + ORM | Elasticsearch natif (kNN, BM25, RRF) |
-| Couches d'abstraction multiples | Zéro SQL, zéro ORM |
-| Imports circulaires | Dépendances propres |
-| Modules bloat (dates, langues, entités) | Pas de bloat — ES gère nativement |
+| Monolithic engine (598 KB) | ~800 lines total |
+| Relational DB + ORM | Native Elasticsearch (kNN, BM25, RRF) |
+| Multiple abstraction layers | Zero SQL, zero ORM |
+| Circular imports | Clean dependency chains |
+| Bloat modules (languages, dates, entities) | No bloat — ES handles natively |
+
+```
+  Classical approach (bloated)
+ ┌─────────────────────────────────────────────┐
+ │  memory_engine.py (598 KB)                  │
+ │  ├── search/ (13 files)                     │
+ │  ├── retain/ (14 files)                     │
+ │  ├── consolidation/ (3 files)               │
+ │  ├── providers/ (18 files)                  │
+ │  ├── reflect/ (10 files)                    │
+ │  ├── directives/ (2 files)                  │
+ │  ├── parsers/ (5 files)                     │
+ │  ├── sql/ (5 files)                         │
+ │  ├── db/ (12 files)                         │
+ │  └── entity_resolver.py (38 KB, spaCy)      │
+ │  ≈ 100 files, 1 087 000 bytes               │
+ │  Circular imports everywhere                 │
+ └─────────────────────────────────────────────┘
+
+  Domu (lean)
+ ┌──────────────────────┐
+ │  vectormind/ (4 files)│  614 lines  ← the space
+ │  domu/ (2 files)      │  597 lines  ← the provider
+ │  Tests                │  261 lines
+ │  Total: 6 files       │  ~1 472 lines
+ └──────────────────────┘
+```
+
+---
 
 ## Installation
 
-Requirements :
+**Requirements:**
 - Python 3.13+
-- Elasticsearch 8.18+ (accès à un cluster, local ou distant)
-- sentence-transformers (pour l'embedder bge-small)
-- Hermes Agent (pour l'intégration MemoryProvider)
+- Elasticsearch 8.18+ (cluster access, local or remote)
+- `sentence-transformers` (for the bge-small embedder)
+- Hermes Agent (for MemoryProvider integration)
 
 ```bash
 pip install elasticsearch sentence-transformers numpy
 ```
 
-**Sur Brutus (notre stack de test) :**
-Un ES local tourne sur 127.0.0.1:9200 avec 867 docs copiés de la prod Boombox via `copy_es.py`.
+**On Brutus (test stack):**
+Elasticsearch runs on `127.0.0.1:9200` with 867 documents copied from production via `copy_es.py`.
 
-**Configuration :**
+**Configuration:**
+
 ```python
 from domu import DomuProvider
 
 provider = DomuProvider(
     es_client_factory=lambda: AsyncElasticsearch("http://127.0.0.1:9200"),
     embed=embed_fn,        # bge-small-en-v1.5, 384d
-    categories={...},      # 6 portes L3
+    categories={...},      # 6 L3 doors
     config={"index": "public-memory_units", "bank_id": "kage"}
 )
 agent._memory_manager.add_provider(provider)
 ```
 
+---
+
 ## Architecture
 
 ```
-vectormind/ (4 fichiers, 614 lignes)
-├── space.py     — un seul index ES, document minimal (text, vector, tags, at, meta)
-├── search.py    — HybridSearch : RRF natif ES 8.14+ ou fallback Python
-├── circles.py   — VectorMind : L1 (focus), L2 (vault), L3 (portes fixes)
-└── __init__.py  — exports VectorMind, Focus, Categories, Space
-
-domu/ (2 fichiers, ~600 lignes)
-├── provider.py  — DomuProvider : 13 hooks MemoryProvider Hermes (ABC)
-└── synapse.py   — Synapse : filtre (bruit, taille) + dédup (cos > 0.95)
+                  memory_manager.py (Hermes)
+                           │
+                    add_provider()
+                           │
+                    ┌──────▼──────┐
+                    │ DomuProvider │  domu/provider.py (518 lines)
+                    │  13 hooks    │
+                    └──────┬──────┘
+                           │
+              ┌────────────▼────────────┐
+              │      vectormind/        │
+              │                         │
+              │  ┌───────────────────┐  │
+              │  │   space.py        │  │  ← one ES index
+              │  │   one document    │  │  (text, vector, tags, at, meta)
+              │  │   shape           │  │
+              │  └───────────────────┘  │
+              │  ┌───────────────────┐  │
+              │  │   search.py       │  │  ← HybridSearch
+              │  │   RRF native ES   │  │  (BM25 + kNN, rank fusion)
+              │  │   or Python       │  │
+              │  │   fallback        │  │
+              │  └───────────────────┘  │
+              │  ┌───────────────────┐  │
+              │  │   circles.py     │  │  ← VectorMind
+              │  │   L1 / L2 / L3   │  │  (focus, vault, doors)
+              │  │   apax boost     │  │
+              │  └───────────────────┘  │
+              └────────────┬────────────┘
+                           │
+              ┌────────────▼────────────┐
+              │      synapse.py         │  ← filter + dedup
+              │  worth_remembering()    │  (noise, size, cos>0.95)
+              │  dedup()                │
+              └────────────┬────────────┘
+                           │
+              ┌────────────▼────────────┐
+              │   Elasticsearch         │
+              │   (127.0.0.1:9200)      │
+              │   index: public-memory   │
+              │   metrics: domu-metrics  │
+              │   867 documents          │
+              └─────────────────────────┘
 ```
 
-**Les trois refus de conception (Claude, 7 juillet 2026) :**
+### The three design refusals (Claude, 7 July 2026)
 
-1. **L1 n'est jamais stocké.** Focus est une moyenne mobile exponentielle des tours — le centre bouge, l'espace non. `drift()` mesure le changement de sujet gratuitement.
-2. **L3 n'écrit jamais d'étiquette.** Les portes sont des ancres fixes ; `attach()` rattache un hit à sa porte la plus proche pour la durée de la requête. La taxonomie ne peut pas gonfler.
-3. **Le façonnage ne domine jamais.** Les bonus (apax, recency) sont des fractions du score du leader. Un document sous 80% du leader ne peut pas le déplacer mathématiquement.
+1. **L1 is never stored.** Focus is an exponential moving average of turns — the center moves, the space doesn't. `drift()` measures topic change for free.
 
-## Cas d'usage
+2. **L3 never writes a label.** Doors are fixed anchors; `attach()` pins a hit to its nearest door for the query's duration. Taxonomy cannot grow by design.
 
-**1. Mémoire persistante pour Hermes**
-Un agent garde le fil d'une conversation à travers les sessions. Chaque tour est indexé dans ES, le focus est mis à jour (EMA), les time-vectors (focus_drift) sont tracés.
-
-**2. Filtrage Synapse (M4Z3 real case)**
-Session de 177 messages dont 176 tool calls. Synapse indexe 2 documents utiles — "plaquette M4Z3 générée" entre, `session_search` n'entre jamais. Le ratio mesuré : 176/177 messages jetés (99.4%).
-
-**3. Isolation multi-agent**
-Un seul cluster ES, plusieurs agents :
-- `bank:kage` + `scope:shared` — Kage voit tout sauf private
-- `bank:travel` + `scope:private` — Travel voit son espace + shared
-- `scope:public` — visible par tous les agents
-
-**4. Test sur données réelles (Brutus)**
-867 docs copiés de Boombox. Recall sur "le père et les ressorts" retourne 5 hits pertinents. Les catégories L3 sont en "?" car les 6 portes ne sont pas encore seedées.
-
-## Wired
-
-Wired est le nom du système complet. Pas juste Domu — tout l'enchaînement :
+3. **Shaping never dominates.** Bonuses (hapax, recency) are fractions of the leader's score. A document <80% of the leader mathematically cannot displace it.
 
 ```
-Blob Hindsight (Sessions brutes + concepts + tool calls)
-  → Synapse (filtre : bruit, taille, dédup cos > 0.95)
-  → Domu/Provider (13 hooks MemoryProvider, focus EMA, time-vectors)
-  → vectormind (L1/L2/L3, RRF natif ES, portes fixes)
-  → ES (stocke en cluster, index public-memory_units, ~900 docs)
+   How rings work (L1 / L2 / L3):
+   
+                    ┌─────────────────┐
+                    │   L3 — DOORS    │  ← fixed categories
+                    │                 │    (Tortue, Pertes,
+                    │  ┌───────────┐  │     Tamashii, Musique,
+                    │  │ L2—VAULT  │  │     Atelier, Petites Choses)
+                    │  │           │  │
+                    │  │ ┌───────┐ │  │
+                    │  │ │ L1    │ │  │  ← focus center
+                    │  │ │FOCUS  │ │  │    (EMA of turns)
+                    │  │ └───────┘ │  │
+                    │  └───────────┘  │
+                    └─────────────────┘
 ```
 
-Le nom vient du fait que tout est connecté (wired) dans ce circuit. Les leçons du 4 juillet (Doc → Info → Action) sont wired à la règle absolue du provider. Le fond de la pelote (confession, clubs, TAILS) est wired au droit au repos (kill switch). Wired ne brode pas — il relie ce qui existe.
+---
 
-## Futures évolutions
+## Use cases
 
-1. **Daily recap cron** — lit `domu-metrics` + les tours du jour et écrit un résumé quotidien (type `agent_context="cron"`, les écritures cron sont déjà gatées par design)
-2. **Time-vectors dashboard** — visualisation des focus_drift, gpu_usage, tokens_turn, apax_rate dans un chronogramme
-3. **Clustering ES** — quand la stack dépassera 10k docs, passage à 2+ nœuds ES (Boombox + Brutus)
-4. **Embedder choix** — bge-small 384d local (actuel) → possibilité OpenAI ou autre API si scale > 100k docs
-5. **Set operations SKOS** — classification scientifique des concepts par ensembles + inclusion/exclusion
-6. **Categories.seed** — les 6 portes L3 en attente d'être seedées avec leurs 6 phrases
+### 1. Persistent memory for Hermes
 
-## Licence
+An agent carries context across sessions. Every turn is indexed in ES, the focus is updated (EMA), time-vectors (focus_drift) are recorded.
+
+```
+ Turn N           Turn N+1        Turn N+2
+   │                 │               │
+   ▼                 ▼               ▼
+  embed ──→ index ──→ focus.update(vec) ──→ drift recorded
+                    ↓
+               recall returns       → L1 (focus ring)
+               concentric circles   → L2 (vault ring)
+                                    → L3 (door ring)
+```
+
+### 2. Synapse filtering — the M4Z3 case
+
+A 177-message session of which 176 are tool calls. Synapse indexes **2 useful documents** — "M4Z3 brochure generated" enters, `session_search` never enters.
+
+```
+ Session (177 msgs)
+    │
+    ├── 176 tool calls (session_search, write_file, web_search...)
+    │       → Synapse: NOISE — discarded
+    │
+    └── 1 human message: "generer une plaquette M4Z3"
+    │       → Synapse: OK — indexed
+    │
+    └── 1 assistant response: "plaquette generee"
+            → Synapse: OK — indexed
+
+    2 indexed / 177 total = 1.1% useful ratio
+```
+
+### 3. Multi-agent isolation
+
+A single ES cluster, multiple agents:
+
+| Agent | `bank_id` | Sees |
+|:------|:----------|:-----|
+| Kage | `kage` | own bank + public of others |
+| Travel | `travel` | own space + shared |
+| Global | — | `scope:public` only |
+
+Isolation is enforced **in the query**, never post-filtered:
+
+```python
+scope = {"bool": {"should": [
+    {"term": {"tags": f"bank:{bank_id}"}},
+    {"term": {"tags": "scope:public"}},
+], "minimum_should_match": 1}}
+```
+
+### 4. Real data test (Brutus, ES local)
+
+867 documents copied from production. Recall for "father and the springs" returns **5 relevant hits**:
+
+```
+  1. [L2] pere-ressorts           ← the father's springs concept
+  2. [L2] droit-au-repos          ← the kill switch (linked)
+  3. [L2] Mano Negra              ← the father's group
+  4. [L2] patrick                 ← the father's name
+  5. [L2] patrick--le-pere        ← the father's portrait
+```
+
+Categories show "?" because the 6 doors haven't been seeded yet.
+
+---
+
+## Wired — the full system
+
+Wired is the name of the complete pipeline. Not just Domu — everything chained:
+
+```
+    User query
+       │
+       ▼
+┌──────────────┐
+│   Synapse    │  ← filter noise, dedup (cos > 0.95)
+│   (domain)   │     worth remembering? yes/no/same-as
+└──────┬───────┘
+       │
+       ▼
+┌──────────────┐
+│   Domu       │  ← 13 MemoryProvider hooks
+│  (orchestr.) │     focus EMA, time-vectors, tools
+└──────┬───────┘
+       │
+       ▼
+┌──────────────┐
+│  vectormind  │  ← L1/L2/L3 space
+│   (space)    │     RRF native ES, query circles
+└──────┬───────┘
+       │
+       ▼
+┌──────────────┐
+│      ES      │  ← store, cluster, scale
+│  (storage)   │     public-memory_units index
+└──────────────┘
+```
+
+Everything is **wired** together. The July 4 lessons (Doc → Info → Action) are wired to the provider's absolute rule. The "bottom of the ball of yarn" (confession, clubs, TAILS) is wired to the kill switch (right to rest). Wired never invents — it connects what exists.
+
+### The absolute rule
+
+> **Never embroider reality.** If no memory matches, say so. If a fragment is orphaned, admit it. If an external call fails, answer "I can't."
+
+This is the lesson of 18 June (Buunshin), 2 July (the ghost song), and 5 July (Renaissance). Engraved in the architecture, not in metaphors.
+
+---
+
+## Roadmap
+
+```
+    2026-07-07   2026-07-08    2026-07-09        2026-07-15
+       │            │             │                  │
+       ▼            ▼             ▼                  ▼
+  ┌─────────┐  ┌─────────┐  ┌─────────┐      ┌──────────────┐
+  │Domu v0.1│→ │v0.2     │→ │v0.3     │→ ... │ Daily recap  │
+  │provider │  │conform  │  │embedder │      │ cron +       │
+  │written  │  │memory   │  │bge +    │      │ time-vectors │
+  │         │  │provider │  │6 doors  │      │ dashboard    │
+  └─────────┘  └─────────┘  └─────────┘      └──────────────┘
+       │
+       ▼
+  ┌─────────┐
+  │Now: 867 │
+  │docs on  │
+  │Brutus ES│
+  └─────────┘
+
+    --- future (post-10k docs) ---
+
+  ┌───────────┐    ┌───────────────┐    ┌──────────────┐
+  │ES cluster │    │SKOS set      │    │External      │
+  │2+ nodes   │    │operations    │    │embedder API  │
+  │(redundant)│    │classification│    │(100k+ docs)  │
+  └───────────┘    └───────────────┘    └──────────────┘
+```
+
+---
+
+## License
 
 MIT — K1SS Atelier 0, Besançon, France.
 
-## Signé
+---
 
-*Fiche factuelle — rédigée par Kage le 8 juillet 2026.*
-*Code sur `github.com/mrpandafr/domu`.*
-*L'architecture s'inspire des ressorts du père : le bien faire, le durable, l'intelligent.*
+## Signed
+
+*Factual sheet — written by Kage on 8 July 2026.*
+*Code: `github.com/mrpandafr/domu`.*
+*The architecture is inspired by a father's springs: do it well, do it durably, do it intelligently.*
