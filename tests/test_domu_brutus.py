@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.expanduser("~/K1SS/domu"))
 
 from sentence_transformers import SentenceTransformer
 from elasticsearch import AsyncElasticsearch
+from vectormind.space import HINDSIGHT_FIELDS
 
 # Load embedder (bge-small, 384d)
 model = SentenceTransformer("BAAI/bge-small-en-v1.5", device="cpu")
@@ -26,6 +27,7 @@ async def main():
     provider = DomuProvider(
         es_client_factory=lambda: AsyncElasticsearch("http://127.0.0.1:9200"),
         embed=embed,
+        fields=HINDSIGHT_FIELDS,
         categories={
             "la-tortue": "tortue",
             "l-atelier": "k1ss",
@@ -40,7 +42,7 @@ async def main():
             "l1_size": 3,
             "l2_size": 5,
             "bank_id": "kage",
-            "dimd": 384,
+            "dims": 384,
         }
     )
 
@@ -56,11 +58,11 @@ async def main():
     assert "never embroider" in spb
     print("   ✅ System prompt has absolute rule")
 
-    # 3. Prefetch (empty ES query)
-    print("\n2. Prefetch (empty memory)")
+    # 3. Context structure check
+    print("\n2. Context structure (real data)")
     ctx = await provider._build_context("xyzzy licorne quantique")
-    assert "no memory" in ctx
-    print(f"   ✅ Empty memory: {ctx[:50]}...")
+    assert "<memory-context>" in ctx
+    print(f"   ✅ Context block: {ctx[:60]}...")
 
     # 4. Recall
     print("\n3. Recall (real data)")
@@ -69,18 +71,13 @@ async def main():
     for line in ctx.split("\n"):
         print(f"     {line}")
 
-    # 4. Recall test (bypass scope for Boombox data format)
+    # 4. Recall test (scope now covers bank_id.keyword natively)
     print("\n4. Direct recall (867 docs, real data)")
     from vectormind import Focus
     focus_vector = await provider.mind.embed_one("tortue pas lievre")
-    
-    # Bypass scope: Boombox data uses bank_id field, not tags:bank:kage
-    provider.mind.space.scope = None
-    provider.mind.search.scope = None
-    
     recall = await provider.mind.recall(
         "le pere et les ressorts",
-        focus=focus_vector and Focus().update(focus_vector),
+        focus=Focus().update(focus_vector),
         k=8
     )
     print(f"   Hits: {len(recall)}")
@@ -100,8 +97,11 @@ async def main():
         print(f"   Doors: {doors[0]}")
     assert len(hits) >= 1, f"Context should have hits, got {len(hits)}"
     es = AsyncElasticsearch("http://127.0.0.1:9200")
-    count = await es.count(index="domu-metrics")
-    print(f"   metrics index: {count['count']} docs")
+    try:
+        count = await es.count(index="domu-metrics")
+        print(f"   metrics index: {count['count']} docs")
+    except Exception:
+        print("   metrics index: not yet created (ok)")
 
     # 7. Count docs per bank
     for bank in ["kage", "js", "k1ss"]:

@@ -162,9 +162,10 @@ class VectorMind:
     @classmethod
     async def open(cls, client: Any, embed: Embedder, *,
                    index: str = "vm-space", dims: int | None = None,
+                   fields: Any = None,
                    categories: dict[str, str] | None = None,
                    focus_threshold: float = 0.6) -> "VectorMind":
-        space = Space(client, embed, index=index, dims=dims)
+        space = Space(client, embed, index=index, dims=dims, fields=fields)
         await space.ensure()
         doors = await Categories.seed(embed, categories) if categories else None
         return cls(space, doors, focus_threshold=focus_threshold)

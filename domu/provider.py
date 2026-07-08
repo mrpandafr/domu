@@ -48,6 +48,24 @@ except ImportError:  # standalone / tests
 
 logger = logging.getLogger(__name__)
 
+_default_embed_fn: Optional[Callable] = None
+
+
+def _load_default_embed() -> Callable:
+    """Lazy-load bge-small-en-v1.5 once, cache at module level."""
+    global _default_embed_fn
+    if _default_embed_fn is None:
+        from sentence_transformers import SentenceTransformer  # type: ignore
+        _model = SentenceTransformer("BAAI/bge-small-en-v1.5", device="cpu")
+
+        async def _embed(texts: List[str]) -> List[List[float]]:
+            return [_model.encode(t, normalize_embeddings=True).tolist()
+                    for t in texts]
+
+        _default_embed_fn = _embed
+    return _default_embed_fn
+
+
 _ABSOLUTE_RULE = (
     "Absolute rule: never embroider reality. If memory returns nothing, "
     "say so. If a fragment is orphaned, admit it. If an external call "
@@ -66,12 +84,14 @@ class DomuProvider(MemoryProvider):
         es_client_factory: Callable[[], Any] | None = None,
         embed: Callable[[List[str]], Any] | None = None,
         categories: Dict[str, str] | None = None,
+        fields: Any = None,
     ) -> None:
         self.config = dict(config or {})
         self._es_client = es_client
         self._client_factory = es_client_factory
         self._embed = embed or self.config.get("embed")
         self._categories_seed = categories or self.config.get("categories")
+        self._fields = fields or self.config.get("fields")
         self.index = self.config.get("index", "vm-space")
         self.metrics_index = self.config.get("metrics_index", "domu-metrics")
         self.l1_size = int(self.config.get("l1_size", 3))
@@ -104,7 +124,10 @@ class DomuProvider(MemoryProvider):
     def is_available(self) -> bool:
         """Config/deps check only — no network, per the ABC contract."""
         if self._embed is None:
-            return False
+            try:
+                import sentence_transformers  # noqa: F401
+            except ImportError:
+                return False
         if self._es_client is not None or self._client_factory is not None:
             return True
         if self.config.get("es_url") or os.getenv("DOMU_ES_URL"):
@@ -134,6 +157,8 @@ class DomuProvider(MemoryProvider):
                     self.index, self.bank_id, self.agent_context)
 
     async def _ainit(self) -> None:
+        if self._embed is None:
+            self._embed = _load_default_embed()
         if self._es_client is None:
             if self._client_factory is not None:
                 self._es_client = self._client_factory()
@@ -148,10 +173,12 @@ class DomuProvider(MemoryProvider):
                 self._es_client = AsyncElasticsearch(**kwargs)
         self.mind = await VectorMind.open(
             self._es_client, self._embed, index=self.index,
-            dims=self.config.get("dims"), categories=self._categories_seed,
+            dims=self.config.get("dims"), fields=self._fields,
+            categories=self._categories_seed,
         )
         visibility: dict = {"bool": {"should": [
             {"term": {"tags": f"bank:{self.bank_id}"}},
+            {"term": {"bank_id.keyword": self.bank_id}},
         ], "minimum_should_match": 1}}
         if self._read_public:
             visibility["bool"]["should"].append({"term": {"tags": "scope:public"}})
