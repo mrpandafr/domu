@@ -58,7 +58,8 @@ class Handler(BaseHTTPRequestHandler):
             self._ok({"error": "not found"}, 404)
             return
         p = _provider
-        self._ok({"ok": p is not None and p.mind is not None,
+        self._ok({"ok": True,
+                  "ready": p is not None and p.mind is not None,
                   "bank": p.bank_id if p else None})
 
     def do_POST(self):

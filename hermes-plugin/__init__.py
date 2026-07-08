@@ -84,7 +84,11 @@ class DomuClient(MemoryProvider):
         return "domu"
 
     def is_available(self) -> bool:
-        return bool(self._get("/health").get("ok"))
+        try:
+            with urllib.request.urlopen(f"{self._url}/health", timeout=2.0) as r:
+                return r.status == 200
+        except Exception:
+            return False
 
     def initialize(self, session_id: str, **kwargs: Any) -> None:
         self._session_id = session_id
