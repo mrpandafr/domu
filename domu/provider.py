@@ -410,6 +410,8 @@ class DomuProvider(MemoryProvider):
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs: Any) -> None:
         self.turn = turn_number
+        if message and self.mind is not None:
+            self.queue_prefetch(message)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Session boundary: wait for the queued writes to land."""
