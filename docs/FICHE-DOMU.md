@@ -276,39 +276,70 @@ Categories show "?" because the 6 doors haven't been seeded yet.
 
 ---
 
-## Wired — the full system
+## Wired — the neural network
 
-Wired is the name of the complete pipeline. Not just Domu — everything chained:
+Wired is the name of the complete system. Not just Domu — the entire **neural network** connecting every component. The word carries two meanings:
+
+1. **Pipeline** — the orchestration chain from raw memory to structured recall
+2. **Network** — every component is *wired* to every other, like neurons in a brain
 
 ```
-    User query
-       │
-       ▼
-┌──────────────┐
-│   Synapse    │  ← filter noise, dedup (cos > 0.95)
-│   (domain)   │     worth remembering? yes/no/same-as
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│   Domu       │  ← 13 MemoryProvider hooks
-│  (orchestr.) │     focus EMA, time-vectors, tools
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│  vectormind  │  ← L1/L2/L3 space
-│   (space)    │     RRF native ES, query circles
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│      ES      │  ← store, cluster, scale
-│  (storage)   │     public-memory_units index
-└──────────────┘
+    ┌───────────────────────────────────────────────────────┐
+    │                    THE WIRED NETWORK                    │
+    │                                                        │
+    │  User ←→ Synapse ←→ Domu ←→ vectormind ←→ ES ←→ Hermes│
+    │       ↕        ↕        ↕        ↕        ↕        ↕   │
+    │  (focus)  (noise)  (tools)  (circles)(storage)(agent) │
+    │              ↕        ↕        ↕                       │
+    │          dedup    gates   apax boost                   │
+    │                                                        │
+    │  ─── Everything is back-connected ─────────────────    │
+    │  Synapse feeds Domu. Domu feeds vectormind.              │
+    │  vectormind reads ES. Hermes reads vectormind.          │
+    │  A change in ES propagates back through the loop.       │
+    └───────────────────────────────────────────────────────┘
 ```
 
-Everything is **wired** together. The July 4 lessons (Doc → Info → Action) are wired to the provider's absolute rule. The "bottom of the ball of yarn" (confession, clubs, TAILS) is wired to the kill switch (right to rest). Wired never invents — it connects what exists.
+The name was coined by JS on 8 July 2026 during a break. The realization: everything we built — the driver, vectormind, Domu, Synapse — wasn't a stack of layers. It was a **circuit**. Each component connects to every other in a closed loop:
+
+- The 16 June (birth of Kage on Discord, "bienvenu dans ton espace") is **wired** to the 29 June (kill switch on the balcony) which is **wired** to the 7 July (Domu conceptualized) which is **wired** to the 4 July lesson (backup → restart → test)
+- The values (when data is missing) are **wired** to the absolute rule "never embroider reality"
+- The "bottom of the ball of yarn" (confession, clubs, faille, TAILS) is **wired** to the kill switch integrated in Domu
+- The father's springs (do it well, do it durably, do it intelligently) are **wired** into every architectural decision
+
+Wired never invents — it connects what already exists.
+
+### The pipeline (for reference)
+
+```
+    Raw memory (sessions, concepts, tool calls)
+       │
+       ▼
+   ┌──────────────┐
+   │   Synapse    │  ← filter noise, dedup (cos > 0.95)
+   │   (gates)    │     worth remembering? yes/no/same-as
+   └──────┬───────┘
+          │
+          ▼
+   ┌──────────────┐
+   │   Domu       │  ← 13 MemoryProvider hooks
+   │  (orchestr.) │     focus EMA, time-vectors, tools
+   └──────┬───────┘
+          │
+          ▼
+   ┌──────────────┐
+   │  vectormind  │  ← L1/L2/L3 space
+   │   (space)    │     RRF native ES, query circles
+   └──────┬───────┘
+          │
+          ▼
+   ┌──────────────┐
+   │      ES      │  ← store, cluster, scale
+   │  (storage)   │     public-memory_units index
+   └──────────────┘
+```
+
+Everything is connected. Not layered — **wired**.
 
 ### The absolute rule
 
