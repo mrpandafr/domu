@@ -57,9 +57,10 @@ No SQL. No ORM. No abstraction layers. ES is backend — kNN, BM25, RRF native.
 ```
 domu/
 │
-├── domu/                    ← Provider code
+├── domu/                    ← Server-side package
 │   ├── provider.py          ← DomuProvider: 13 MemoryProvider hooks (518 lines)
 │   ├── synapse.py           ← Gate filter: noise, size, cosine dedup (79 lines)
+│   ├── server.py            ← HTTP server wrapping DomuProvider (185 lines)
 │   └── __init__.py
 │
 ├── vectormind/              ← Vector engine (standalone, 614 lines)
@@ -67,6 +68,13 @@ domu/
 │   ├── search.py            ← HybridSearch: RRF native or Python fallback
 │   ├── circles.py           ← VectorMind: L1/L2/L3, doors, hapax boost
 │   └── __init__.py
+│
+├── hermes-plugin/           ← Thin Hermes plugin (no heavy deps)
+│   ├── __init__.py          ← DomuClient: MemoryProvider ABC over HTTP (209 lines)
+│   └── plugin.yaml
+│
+├── cron/
+│   └── daily_recap.py       ← Daily summary → space (run as cron job)
 │
 ├── tests/
 │   ├── test_domu.py         ← Simulated Hermes session (13 hooks, fake cluster)
@@ -76,82 +84,98 @@ domu/
 ├── docs/
 │   ├── DOMU.md              ← Full vision, rules, architecture
 │   ├── DOMU-HERMES.md       ← Technical contract (Synapse rules, clustering)
-│   ├── FICHES-CONCEPTS.md   ← SKOS classification (agents, people, projects)
-│   ├── FICHE-DOMU.md        ← English factual sheet with ASCII diagrams
-│   ├── WIRED-README.md      ← The Wired network concept
-│   └── domu-for-alex.html   ← Presentation page
+│   └── FICHES-CONCEPTS.md   ← SKOS classification (agents, people, projects)
 │
-├── memory_provider.py       ← Hermes ABC reference (315 lines)
-├── copy_es.py               ← Copy ES data between clusters
-├── CLAUDE-PLAN.md            ← Development plan for Claude
+├── run_server.py            ← Entry point: starts the Domu server
+├── copy_es.py               ← Utility: copy ES data between clusters
 └── README.md                ← This file
 ```
 
-**Total: 6 files of code. ~1 100 lines. Zero SQL. Zero circular imports.**
+**Two processes, zero shared state. Zero SQL. Zero circular imports.**
 
 ---
 
 ## Quick start
 
+Domu runs as two processes: a **memory server** and a **Hermes plugin**. The server holds all the heavy dependencies (Elasticsearch, sentence-transformers, asyncio). The plugin is stdlib-only and talks to the server over localhost HTTP.
+
 ### 1. Requirements
 
-```bash
-# Core
-pip install elasticsearch sentence-transformers
-
-# Hermes Agent (for MemoryProvider integration)
-# See: https://hermes-agent.ai/docs
+```
+Python 3.11+
+Elasticsearch 8+
 ```
 
-### 2. Set up Elasticsearch
+### 2. Start Elasticsearch
 
 ```bash
-# Local ES (Docker)
-docker run -d --name es-domu \
+# Docker (single node, no auth)
+docker run -d --name domu-es \
   -p 9200:9200 \
   -e "discovery.type=single-node" \
   -e "xpack.security.enabled=false" \
   docker.elastic.co/elasticsearch/elasticsearch:8.18.0
 
-# Verify
-curl http://127.0.0.1:9200
+curl http://127.0.0.1:9200  # → {"name":"...","cluster_name":"..."}
 ```
 
-### 3. Configure Domu
-
-```python
-from elasticsearch import AsyncElasticsearch
-from sentence_transformers import SentenceTransformer
-
-from domu import DomuProvider
-
-# Embedder
-model = SentenceTransformer("BAAI/bge-small-en-v1.5", device="cpu")
-async def embed(texts):
-    return [model.encode(t, normalize_embeddings=True).tolist() for t in texts]
-
-# Provider
-provider = DomuProvider(
-    es_client_factory=lambda: AsyncElasticsearch("http://127.0.0.1:9200"),
-    embed=embed,
-    categories={
-        "la-tortue": "tortue",
-        "les-pertes": "perte",
-        "tamashii": "tamashii",
-        "la-musique": "musique",
-        "l-atelier": "k1ss",
-        "les-petites-choses": "choses",
-    }
-)
-
-agent._memory_manager.add_provider(provider)
-```
-
-### 4. Start Hermes with Domu
+### 3. Start the Domu server
 
 ```bash
-hermes -p domu-test chat
+git clone https://github.com/mrpandafr/domu
+cd domu
+pip install elasticsearch sentence-transformers
+python run_server.py
+# → domu server on 127.0.0.1:7430
 ```
+
+The server exposes `GET /health` and a set of `POST` routes. It stays running in the background — one process per machine, shared by all Hermes sessions.
+
+```bash
+# Override defaults
+DOMU_ES_URL=http://192.168.1.10:9200 DOMU_BANK_ID=kage python run_server.py --port 7430
+```
+
+### 4. Install the Hermes plugin
+
+```bash
+ln -s /path/to/domu/hermes-plugin ~/.hermes/plugins/domu
+```
+
+The plugin is a single file with zero non-stdlib imports. It implements the full `MemoryProvider` ABC and delegates every call to the server via `urllib`.
+
+### 5. Configure
+
+```bash
+mkdir -p ~/.hermes/domu
+cat > ~/.hermes/domu/config.json << 'EOF'
+{
+  "bank_id": "your-agent-name",
+  "index": "public-memory_units",
+  "server_url": "http://127.0.0.1:7430"
+}
+EOF
+```
+
+Activate in your Hermes profile:
+
+```yaml
+# ~/.hermes/profiles/<name>/config.yaml
+memory:
+  provider: domu
+```
+
+### 6. Run
+
+```bash
+# Terminal 1 — server (keep running)
+python run_server.py
+
+# Terminal 2 — agent
+hermes --profile your-profile
+```
+
+On startup, the plugin calls `GET /health`. If the server responds, `is_available()` returns `True`, Hermes calls `initialize()` → `POST /session/init`, and the provider is live. Every subsequent turn: `prefetch()` → `POST /prefetch` → L1/L2/L3 block injected before the model sees the message.
 
 ---
 
@@ -259,36 +283,30 @@ Isolation enforced in the query, never post-filtered.
 
 ## Configuration
 
-### Environment variables
+### Server — environment variables
 
 | Variable | Default | Description |
 |:---------|:--------|:------------|
-| `DOMU_ES_URL` | `http://127.0.0.1:9200` | Elasticsearch cluster endpoint |
-| `DOMU_BANK_ID` | `"kage"` | The agent's memory namespace |
-| `DOMU_INDEX` | `"public-memory_units"` | ES index for memory |
-| `DOMU_ES_API_KEY` | — | Optional ES auth (if security enabled) |
+| `DOMU_ES_URL` | `http://127.0.0.1:9200` | Elasticsearch endpoint |
+| `DOMU_BANK_ID` | `"kage"` | Default memory bank |
+| `DOMU_INDEX` | `"public-memory_units"` | ES index |
+| `DOMU_ES_API_KEY` | — | ES auth (optional) |
+| `DOMU_SERVER_URL` | `http://127.0.0.1:7430` | Server URL (read by the plugin) |
 
-### Config file
+### Plugin — `~/.hermes/domu/config.json`
 
-Domu also reads from `~/.hermes/domu/config.json`:
+All keys are optional (env vars take precedence):
 
 ```json
 {
-  "es_url": "http://127.0.0.1:9200",
+  "server_url": "http://127.0.0.1:7430",
   "bank_id": "kage",
-  "index": "public-memory_units"
+  "index": "public-memory_units",
+  "l1_size": 1,
+  "l2_size": 3,
+  "l1_max_chars": 600,
+  "l2_max_chars": 300
 }
-```
-
-### Plugin
-
-Domu ships as a Hermes plugin at `~/.hermes/plugins/domu/`. Add to your profile:
-
-```yaml
-# ~/.hermes/profiles/<name>/config.yaml
-memory:
-  provider: domu
-```
 
 ---
 
@@ -392,9 +410,4 @@ MIT — K1SS Atelier 0, Besançon, France.
 
 **One space. Three circles. Five verbs. Zero bullshit.** 🐢
 
----
-## License
 
-MIT — ©  
-
-See [LICENSE](LICENSE) for the full text.
