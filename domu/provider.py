@@ -487,6 +487,80 @@ class DomuProvider(MemoryProvider):
         return []
 
     # ------------------------------------------------------------------
+    # cron — dedicated read/write paths that bypass _writes_enabled
+    # ------------------------------------------------------------------
+
+    def read_daily_summary(self, date: str | None = None) -> Dict[str, Any]:
+        """Return today's turns + metrics for the bank (sync, for cron use)."""
+        return self._run(self._adaily_summary(date), timeout=30)
+
+    def write_cron_recap(self, text: str, date: str | None = None) -> Optional[str]:
+        """Write a recap document — cron-dedicated path, always permitted.
+
+        Normal writes are gated by _writes_enabled (cron context blocks
+        them to protect user representations). Recap documents are *about*
+        what happened, not conversational turns — they explicitly belong in
+        the space and must survive the gate.
+        """
+        from datetime import date as _date
+        today = date or _date.today().isoformat()
+        return self._run(self._awrite_recap(text, today), timeout=30)
+
+    async def _adaily_summary(self, date: str | None = None) -> Dict[str, Any]:
+        from datetime import date as _date
+        today = date or _date.today().isoformat()
+        since = f"{today}T00:00:00Z"
+        turns: List[Dict] = []
+        metrics: List[Dict] = []
+        if self._es_client is None:
+            return {"date": today, "turns": turns, "metrics": metrics}
+        try:
+            resp = await self._es_client.search(
+                index=self.index,
+                body={
+                    "query": {"bool": {"filter": [
+                        {"term": {"tags": f"bank:{self.bank_id}"}},
+                        {"range": {"at": {"gte": since}}},
+                    ]}},
+                    "_source": ["text", "tags", "at", "meta"],
+                    "size": 200,
+                    "sort": [{"at": "asc"}],
+                    "track_total_hits": False,
+                },
+            )
+            turns = [h["_source"] for h in resp["hits"]["hits"]]
+        except Exception:
+            logger.debug("daily_summary: turn query failed", exc_info=True)
+        try:
+            mresp = await self._es_client.search(
+                index=self.metrics_index,
+                body={
+                    "query": {"bool": {"filter": [
+                        {"term": {"agent": self.bank_id}},
+                        {"range": {"at": {"gte": since}}},
+                    ]}},
+                    "_source": ["type", "value", "delta", "context", "at"],
+                    "size": 500,
+                    "sort": [{"at": "asc"}],
+                    "track_total_hits": False,
+                },
+            )
+            metrics = [h["_source"] for h in mresp["hits"]["hits"]]
+        except Exception:
+            pass  # metrics index may not exist yet
+        return {"date": today, "turns": turns, "metrics": metrics}
+
+    async def _awrite_recap(self, text: str, date: str) -> Optional[str]:
+        if self.mind is None:
+            return None
+        ids = await self.mind.remember(
+            [text],
+            tags=[[f"bank:{self.bank_id}", "type:recap", f"date:{date}"]],
+            meta=[{"date": date, "role": "cron", "bank_id": self.bank_id}],
+        )
+        return ids[0]
+
+    # ------------------------------------------------------------------
     # internals
     # ------------------------------------------------------------------
 
