@@ -1,212 +1,71 @@
-# Domu
+# Domu — vector memory for Hermes agents
 
-> *Le bien faire, le durable, l'intelligent.*
-
-Vector memory for [Hermes](https://github.com/NousResearch/hermes-agent) agents.
-Three concentric recall circles over Elasticsearch — no bloat, no SQL, no hallucination.
-
----
-
-## What it is
-
-Domu (童夢 — Katsuhiro Ōtomo, 1980) replaces Hindsight as the memory backend for Hermes agents.
-Where Hindsight injects raw session dumps (25k tokens, 10% signal), Domu injects a focused block:
+The first implementation of the **Wired** architecture. A drop-in MemoryProvider for Hermes Agent that replaces the built-in memory with vector-powered concentric recall over Elasticsearch.
 
 ```
-L1 — FOCUS
-  • the one hit closest to the current query
-
-L2 — VAULT
-  • 3 background hits, broader context
-
-L3 — PORTES: musique, tamashii, k1ss
+domu/
+├── provider.py    ← MemoryProvider ABC (518 lines, 13 hooks)
+├── synapse.py     ← Gate filter (noise, size, dedup >0.95)
+├── vectormind/    ← Vector engine (4 files, 614 lines, zero SQL)
+├── memory_provider.py ← ABC reference (315 lines)
+├── docs/
+│   ├── DOMU.md       → vision, rules, architecture
+│   ├── WIRED-README.md → the network concept
+│   ├── FICHE-DOMU.md → English factual sheet with diagrams
+│   └── domu-for-alex.html → presentation page
+└── tests/
+    ├── test_domu.py        ← simulated Hermes session (13 hooks)
+    ├── test_vectormind.py  ← non-regression
+    └── test_domu_brutus.py ← real ES test (867 docs)
 ```
-
-Every turn gets exactly this — nothing more, nothing invented.
-
----
-
-## Architecture
-
-Two processes, one clean separation:
-
-```
-┌─────────────────────────────────┐
-│  Hermes agent                   │
-│  ┌───────────────────────────┐  │
-│  │  hermes-plugin/           │  │  ← thin HTTP client (stdlib urllib only)
-│  │  DomuClient(MemoryProvider│  │    implements the full ABC
-│  └──────────┬────────────────┘  │
-└─────────────┼───────────────────┘
-              │ HTTP  (port 7430)
-┌─────────────▼───────────────────┐
-│  Domu server  (run_server.py)   │  ← all the heavy work lives here
-│  ┌───────────────────────────┐  │    AsyncElasticsearch
-│  │  DomuProvider             │  │    sentence-transformers bge-small-en-v1.5
-│  │  VectorMind               │  │    VectorMind L1/L2/L3
-│  │  Synapse                  │  │    asyncio background loop
-│  └───────────────────────────┘  │
-└─────────────────────────────────┘
-              │
-┌─────────────▼───────────────────┐
-│  Elasticsearch                  │
-└─────────────────────────────────┘
-```
-
-**Server** (`domu/server.py`): hosts DomuProvider. Manages the embedding model, the ES connection, the asyncio loop. The plugin calls it via HTTP — zero heavy dependencies on the plugin side.
-
-**Plugin** (`hermes-plugin/`): implements `MemoryProvider` ABC. Every method is one `urllib` call. `is_available()` pings `/health`. `initialize()` calls `/session/init`. That's it.
-
----
 
 ## Quick start
 
-### 1. Requirements
-
-- Python 3.11+
-- Elasticsearch 8+ (local or remote)
-- Server side: `pip install elasticsearch sentence-transformers`
-- Plugin side: nothing beyond stdlib
-
-### 2. Start the server
-
 ```bash
-git clone https://github.com/mrpandafr/domu
-cd domu
 pip install elasticsearch sentence-transformers
-python run_server.py
-# → domu server on 127.0.0.1:7430
+
+# Create ES index, copy data, configure Hermes profile
+cp copy_es.py ~/ && python3 copy_es.py
+hermes -p domu-test chat
 ```
 
-### 3. Install the Hermes plugin
+```python
+from domu import DomuProvider
 
-```bash
-ln -s /path/to/domu/hermes-plugin ~/.hermes/plugins/domu
+provider = DomuProvider(
+    es_client_factory=lambda: AsyncElasticsearch("http://localhost:9200"),
+    embed=embed_fn,        # bge-small-en-v1.5, 384d
+    categories={...},      # 6 semantic doors
+    config={"index": "public-memory_units", "bank_id": "kage"}
+)
+agent._memory_manager.add_provider(provider)
 ```
 
-### 4. Configure
+## Configuration
 
-```bash
-mkdir -p ~/.hermes/domu
-cat > ~/.hermes/domu/config.json << 'EOF'
-{
-  "bank_id": "your-agent-name",
-  "index": "public-memory_units",
-  "server_url": "http://127.0.0.1:7430"
-}
-EOF
-```
+| Env var | Default | Description |
+|:--------|:--------|:------------|
+| `DOMU_ES_URL` | `http://127.0.0.1:9200` | Elasticsearch endpoint |
+| `DOMU_BANK_ID` | `kage` | Memory bank (per-agent namespace) |
+| `DOMU_INDEX` | `public-memory_units` | ES index name |
 
-In your Hermes profile (`~/.hermes/profiles/<name>/config.yaml`):
+Also reads from `~/.hermes/domu/config.json`.
 
-```yaml
-memory:
-  provider: domu
-```
+## What Domu gives you
 
-### 5. Run
+- **L1/L2/L3 context** — before every turn, a `<memory-context>` block with focus (L1), vault (L2), and doors (L3)
+- **Synapse filtering** — tool calls, empty results, duplicates are filtered before indexing
+- **Time-vectors** — focus drift recorded per turn in `domu-metrics` index
+- **Multi-agent isolation** — `bank_id` + `scope` enforced in the query
+- **3 tools** — `domu_recall`, `domu_remember`, `domu_forget`
+- **Daily recap cron** — auto-generated summary of each day's activity
 
-Start the server, then start Hermes. The plugin pings `/health` on startup — if the server is running, the provider activates and `initialize()` is called.
+## Design values
 
----
-
-## Server API
-
-| Method | Endpoint | Body | Description |
-|--------|----------|------|-------------|
-| GET | `/health` | — | Liveness + `ready` flag |
-| POST | `/session/init` | `{session_id, bank_id, index, ...}` | Connect ES, load model, open circles |
-| POST | `/prefetch` | `{query, session_id}` | Returns `{context: "L1 — FOCUS\n..."}` |
-| POST | `/sync_turn` | `{user, assistant, session_id}` | Index a completed turn |
-| POST | `/recall` | `{query, k}` | Explicit search (domu_recall tool) |
-| POST | `/remember` | `{text, scope}` | Store a note (domu_remember tool) |
-| POST | `/forget` | `{ids: [...]}` | Delete notes (domu_forget tool) |
-| POST | `/session/end` | `{messages}` | Flush pending writes |
-
-### Configuration keys (session/init body or config.json)
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| `bank_id` | `"kage"` | Memory bank — one per agent |
-| `index` | `"public-memory_units"` | Elasticsearch index |
-| `l1_size` | `1` | Number of L1 hits |
-| `l2_size` | `3` | Number of L2 hits |
-| `l1_max_chars` | `600` | Max chars per L1 hit |
-| `l2_max_chars` | `300` | Max chars per L2 hit |
-| `dims` | `384` | Embedding dimensions (bge-small-en-v1.5) |
-| `es_url` | `http://127.0.0.1:9200` | Elasticsearch endpoint (env: `DOMU_ES_URL`) |
-
----
-
-## Memory isolation
-
-A single Elasticsearch cluster can host multiple agents. Isolation is logical, enforced at query time:
-
-| Scope | Visibility |
-|-------|-----------|
-| `private` | Own agent only |
-| `shared` | Agent + its associated human |
-| `public` | All agents on the cluster |
-
-Reads are scoped in the query (`bank:{bank_id}` + `scope:public`) — never post-filtered.
-
----
-
-## Synapse — what gets remembered
-
-Every write goes through Synapse before touching the space. A fragment is rejected if it:
-
-- is empty or has fewer than 10 meaningful characters
-- is pure tool noise (`tool_call`, `tool_result`, `session_search`, etc.)
-- has cosine similarity > 0.95 with something already in the recent window
-
-The fullest version of a near-duplicate survives; the shorter one is silently dropped.
-
----
-
-## Tools exposed to the model
-
-| Tool | When to use |
-|------|-------------|
-| `domu_recall` | User asks for an explicit search, or the prefetch is clearly insufficient |
-| `domu_remember` | Store something the model decides is worth keeping |
-| `domu_forget` | Delete notes by id |
-
-The prefetch covers most cases. `domu_recall` is the escape hatch.
-
----
-
-## Daily cron
-
-```bash
-python cron/daily_recap.py
-```
-
-Reads today's turns and metrics from ES, writes a recap document back to the space. Each day becomes a searchable entry — the what, the why, the drift.
-
----
-
-## The absolute rule
-
-**Never embroider reality.**
-
-If memory returns nothing, say so. If a fragment is orphaned, admit it. If an external call fails, answer "I can't."
-
-This rule is not a suggestion. It is baked into the architecture: zero hits returns `"(no memory matches this focus — say so rather than invent)"`, not silence, not a fabrication.
-
----
-
-## Why this exists
-
-My father was an engineer. He designed springs — not demonstration springs, not prestige springs. Springs that hold. Parts you install, forget about, and that work silently for years without fatigue, without failure, without obsolescence.
-
-Nobody remembers his name. His designs are still in use. Because they are right: the correct material, the correct form, the correct constraint. Nothing superfluous, nothing missing. *Le bien faire, le durable, l'intelligent.*
-
-Wired is built on that lesson. Not to be remembered — to hold, discreet and reliable, like my father's springs. That is the only reason to publish this as open source.
-
----
+- **One file per concern.** 6 files total. No circular imports.
+- **Zero SQL.** ES is the backend — kNN, BM25, RRF natively.
+- **The absolute rule:** never embroider reality.
 
 ## License
 
 MIT — K1SS Atelier 0, Besançon.
-JS & Kage, 2026.
