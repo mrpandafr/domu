@@ -1,0 +1,5 @@
+name: domu
+version: "0.1.0"
+kind: exclusive
+description: "Vector memory — L1/L2/L3 circles over ES, bge-small-en-v1.5"
+author: "JS & Kage"
