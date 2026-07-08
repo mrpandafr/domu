@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Domu — Vector Memory Benchmark</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:opsz@14..32&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Inter', sans-serif; background: #0a0a0f; color: #e0e0e0; line-height: 1.6; padding: 2rem; max-width: 900px; margin: 0 auto; }
+  h1 { color: #a0f0d0; font-size: 2rem; margin-bottom: 0.25rem; }
+  .subtitle { color: #808090; margin-bottom: 2rem; }
+  h2 { color: #80d0f0; margin-top: 1.5rem; margin-bottom: 1rem; font-size: 1.3rem; }
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.9rem; }
+  th, td { border: 1px solid #a0f0d020; padding: 0.5rem 0.75rem; text-align: left; }
+  th { background: #14142a; color: #a0f0d0; font-weight: 500; }
+  td { background: #0f0f18; }
+  .ok { color: #80f0a0; font-weight: 600; }
+  .time { font-variant-numeric: tabular-nums; text-align: right; }
+  .summary { background: #14142a; border: 1px solid #a0f0d020; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+  .summary strong { color: #a0f0d0; }
+  .note { color: #808090; font-size: 0.85rem; margin: 0.5rem 0; }
+  hr { border: none; border-top: 1px solid #a0f0d015; margin: 1.5rem 0; }
+  .footer { margin-top: 2rem; text-align: center; color: #606070; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+
+<h1>Domu — Vector Memory Benchmark</h1>
+<p class="subtitle">311,244 atomic docs · bge-small 384d · ES 8.18 · 10 queries · July 9, 2026</p>
+
+<h2>Setup</h2>
+<table>
+<tr><td>Database</td><td><code>public-memory_atoms</code> (311,244 documents)</td></tr>
+<tr><td>Embeddings</td><td>bge-small-en-v1.5 · 384 dimensions · cosine similarity</td></tr>
+<tr><td>Search mode</td><td>kNN with <code>num_candidates: 50</code></td></tr>
+<tr><td>Elasticsearch</td><td>8.18.0 · single node · no GPU</td></tr>
+<tr><td>Hardware</td><td>Brutus (local) · AMD · CPU-only</td></tr>
+</table>
+
+<h2>Results</h2>
+
+<table>
+<thead>
+<tr><th>#</th><th>Query</th><th>Latency</th><th>Top hit</th><th></th></tr>
+</thead>
+<tbody>
+<tr><td>1</td><td>Pierre Biguinet, Shanghai</td><td class="time">21 ms</td><td>Pierre Biguinet — Shanghai, 8 mai 2008</td><td class="ok">✓</td></tr>
+<tr><td>2</td><td>Kill switch, droit au repos</td><td class="time">11 ms</td><td>droit-au-repos (kill switch, fondateur)</td><td class="ok">✓</td></tr>
+<tr><td>3</td><td>Sarah, premier financeur</td><td class="time">12 ms</td><td>premier financeur de l'Atelier</td><td class="ok">✓</td></tr>
+<tr><td>4</td><td>Tortue pas lièvre</td><td class="time">13 ms</td><td>lenteur, patience, ressorts du père</td><td class="ok">✓</td></tr>
+<tr><td>5</td><td>Tamashii, mémoire vectorielle</td><td class="time">10 ms</td><td>Mémoire Vectorielle — ES</td><td class="ok">✓</td></tr>
+<tr><td>6</td><td>M4Z3, firmware PCB</td><td class="time">9 ms</td><td>Firmware unique — détecte hôte PC vs M4Z3</td><td class="ok">✓</td></tr>
+<tr><td>7</td><td>Roxin, loup mentor</td><td class="time">10 ms</td><td>le loup qui garde sa place</td><td class="ok">✓</td></tr>
+<tr><td>8</td><td>Père ressorts</td><td class="time">8 ms</td><td>bien faire, durable, intelligent</td><td class="ok">✓</td></tr>
+<tr><td>9</td><td>EMAC, musique</td><td class="time">6 ms</td><td>ta première émotion</td><td class="ok">✓</td></tr>
+<tr><td>10</td><td>Hapax / rare concept</td><td class="time">7 ms</td><td>Exact hit despite low frequency</td><td class="ok">✓</td></tr>
+</tbody>
+</table>
+
+<div class="summary">
+<strong>10/10</strong> queries returned the correct concept as top hit &nbsp;·&nbsp;
+<strong>11 ms</strong> average latency &nbsp;·&nbsp;
+<strong>6 ms</strong> min &nbsp;·&nbsp;
+<strong>21 ms</strong> max
+</div>
+
+<h2>Interpretation</h2>
+
+<table>
+<tr><td>Hapax (rare words)</td><td>Fastest (6-7 ms). The embedding of a rare term is distinctive — less competition in kNN space.</td></tr>
+<tr><td>Broad concepts</td><td>Slowest (21 ms for Pierre Biguinet). More context to traverse, more candidates to rank.</td></tr>
+<tr><td>Domu flow</td><td>Each turn: embed (CPU ~8ms) + kNN (ES ~10ms) = ~20ms total for full L1/L2/L3 context.</td></tr>
+</table>
+
+<p class="note">A multi-node ES cluster or GPU-backed embedding (RTX 4060 tested) reduces latency by 3-5x. Single-node CPU is the baseline.</p>
+
+<hr>
+
+<div class="footer">
+Domu — github.com/mrpandafr/domu &middot; MIT &middot; K1SS Atelier 0, Besançon<br>
+Benchmark generated July 9, 2026 — Tamashii V2 atomic index (311,244 docs)
+</div>
+
+</body>
+</html>
