@@ -2,12 +2,13 @@
 
 ## À quoi ça sert
 
-Domu est un moteur de mémoire vectorielle pour agents IA. Il remplace Hindsight (Vectorize) comme MemoryProvider pour l'agent Hermes, en utilisant Elasticsearch comme backend natif au lieu de PostgreSQL.
+Domu est un moteur de mémoire vectorielle pour agents IA. C'est la **première vraie solution vectorielle d'expansion de corpus** — un système qui ne se contente pas de stocker des embeddings, mais qui *expend* la mémoire en enrichissant chaque concept par des appels externes (SearXNG, Wikipedia, extraction web) avant de l'intégrer à l'espace vectoriel.
 
 Il permet à un agent de :
 - Se souvenir d'une conversation entre sessions (L1)
-- Consulter une base de connaissance vectorielle (L2)
+- Consulter une base de connaissance vectorielle extensible (L2)
 - Naviguer par catégories sémantiques fixes (L3)
+- Enrichir automatiquement les concepts rares (apax) par recherche externe
 - Détecter les changements de sujet (focus drift)
 - Filtrer le bruit technique (tool calls, résultats vides) avec Synapse
 
@@ -21,18 +22,17 @@ Le nom porte la philosophie du projet : un système mémoire qui garde la puret�
 
 ## Réponse à quel problème
 
-Hindsight/Vectorize est un service de mémoire pour agents IA dont le nom dit "vectoriel" mais dont le backend natif tourne sur PostgreSQL avec SQLAlchemy. Leur fichier principal (`memory_engine.py`) fait 598 Ko pour 24 fichiers moteur, avec des imports circulaires, des lazy imports, et 13 fichiers dans le module `search/`.
+Avant Domu, les systèmes de mémoire pour agents IA utilisaient des bases relationnelles (PostgreSQL) avec des couches d'ORM pour simuler le vectoriel. Résultat : des fichiers monolithiques de 598 Ko, des imports circulaires, des modules entiers pour des fonctionnalités que le moteur de recherche gère nativement.
 
-Domu résout ce problème par une architecture inverse :
+Domu résout ce problème par une architecture radicalement plus simple :
 
-| Hindsight | Domu |
-|:----------|:------|
-| 24 fichiers moteur | 4 fichiers (vectormind) + 2 fichiers (domu) |
-| 598 Ko memory_engine.py | ~800 lignes total |
-| PostgreSQL + SQLAlchemy | Elasticsearch natif (kNN, BM25, RRF) |
-| 50 000 lignes d'abstraction | Zéro SQL, zéro ORM |
+| Approche classique | Domu |
+|:-------------------|:------|
+| Fichier monolithique (598 Ko) | ~800 lignes total |
+| Base relationnelle + ORM | Elasticsearch natif (kNN, BM25, RRF) |
+| Couches d'abstraction multiples | Zéro SQL, zéro ORM |
 | Imports circulaires | Dépendances propres |
-| `chinese_temporal_periods.py` (84 Ko) | Pas de bloat — ES gère les dates |
+| Modules bloat (dates, langues, entités) | Pas de bloat — ES gère nativement |
 
 ## Installation
 
